@@ -1,0 +1,4 @@
+CompileFlags:
+  CompilationDatabase: build/lin
+Completion:
+  HeaderInsertion: Never
