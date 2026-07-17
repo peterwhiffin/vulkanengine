@@ -1,39 +1,36 @@
-#include "stdlib.h"
 #include "assert.h"
 
 #include "SDL3/SDL_vulkan.h"
 #include "SDL3/SDL_init.h"
+#include "SDL3/SDL_timer.h"
 
 #define VOLK_IMPLEMENTATION
 #define VK_NO_PROTOTYPES
 #include "volk.h"
 
 #define STB_IMAGE_IMPLEMENTATION
-#include <stb_image.h>
+#include "stb_image.h"
+
+#define CGLTF_IMPLEMENTATION
+#include "cgltf.h"
 
 #include "log.h"
 #include "types.h"
+
+#include "editor.c"
 
 bool const engine_validation_layers_enabled = true;
 u32 const FIF = 2;
 
 // clang-format off
-float vertices[] = {
+float quad_verts[] = {
 	-1.0f,-1.0f, 0.0f, 0.0f, 
 	-1.0f, 1.0f, 0.0f, 1.0f,
 	 1.0f,-1.0f, 1.0f, 0.0f,
 	 1.0f, 1.0f, 1.0f, 1.0f
 };
-
-// float vertices[] = {
-// 	0.5f,0.5f, 0.0f, 0.0f, 
-// 	 0.0f, -0.5f, 0.0f, 1.0f,
-// 	 -0.5f,0.5f, 1.0f, 0.0f,
-// };
 // clang-format on
-
-u32 indices[] = { 0, 1, 2, 3 };
-// u32 indices[] = { 0, 1, 2 };
+u32 quad_indices[] = { 0, 1, 2, 3 };
 
 void vk_chk(VkResult result, char *msg)
 {
@@ -511,12 +508,6 @@ void vk_create_uniform_buffers(struct render_state *ren)
 		       "Allocating Test Uniform Buffer");
 		vmaSetAllocationName(ren->allocator, ren->test_uniform_buf[i].alloc, "Test Uniform Buffer");
 
-		// VkBufferDeviceAddressInfo dai = {
-		// 	.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,
-		// 	.pNext = NULL,
-		// 	.buffer = ren->ubuf[i].buf,
-		// };
-
 		ren->test_uniform_buf[i].addr = 0;
 	}
 }
@@ -575,10 +566,10 @@ void vk_allocate_command_buffers(struct render_state *ren)
 	vk_chk(vkAllocateCommandBuffers(ren->device, &cba, ren->cmds), "Allocating Command Buffers");
 }
 
-void vk_load_texture(struct render_state *ren)
+void vk_load_texture(struct render_state *ren, char *file)
 {
 	int w, h, ch;
-	char *file = "../../res/texture.jpg";
+	// char *file = "../../res/texture.jpg";
 	stbi_uc *d = stbi_load(file, &w, &h, &ch, STBI_rgb_alpha);
 	VkDeviceSize size = w * h * STBI_rgb_alpha;
 
@@ -587,6 +578,7 @@ void vk_load_texture(struct render_state *ren)
 		exit(1);
 	}
 
+	struct image *img = &ren->textures[ren->texture_count];
 	//take largest dim, log2 returns the number of times it can be divided by 2,
 	//and take the floor for dims that aren't powers of 2.
 	u32 mip_levels = (u32)floorf(log2f(fmaxf(w, h))) + 1;
@@ -631,9 +623,8 @@ void vk_load_texture(struct render_state *ren)
 		.usage = VMA_MEMORY_USAGE_AUTO,
 	};
 
-	vk_chk(vmaCreateImage(ren->allocator, &ici, &iaci, &ren->tex_image.image, &ren->tex_image.alloc, NULL),
-	       "Allocating Texture Image");
-	vmaSetAllocationName(ren->allocator, ren->tex_image.alloc, "Texture Image");
+	vk_chk(vmaCreateImage(ren->allocator, &ici, &iaci, &img->image, &img->alloc, NULL), "Allocating Texture Image");
+	vmaSetAllocationName(ren->allocator, img->alloc, "Texture Image");
 
 	VkImageSubresourceRange sub = {
 		.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
@@ -643,13 +634,13 @@ void vk_load_texture(struct render_state *ren)
 
 	VkImageViewCreateInfo vci = {
 		.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-		.image = ren->tex_image.image,
+		.image = img->image,
 		.viewType = VK_IMAGE_VIEW_TYPE_2D,
 		.format = ici.format,
 		.subresourceRange = sub,
 	};
 
-	vk_chk(vkCreateImageView(ren->device, &vci, NULL, &ren->tex_image.view), "Creating Image View");
+	vk_chk(vkCreateImageView(ren->device, &vci, NULL, &img->view), "Creating Image View");
 	VkCommandBuffer cmd = vk_begin_one_time_cmds(ren);
 
 	VkImageSubresourceRange rng = {
@@ -666,7 +657,7 @@ void vk_load_texture(struct render_state *ren)
 		.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
 		.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
 		.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-		.image = ren->tex_image.image,
+		.image = img->image,
 		.subresourceRange = rng,
 	};
 
@@ -692,15 +683,190 @@ void vk_load_texture(struct render_state *ren)
 		.imageOffset = { 0, 0, 0 },
 		.imageExtent = { w, h, 1 },
 	};
-	vkCmdCopyBufferToImage(cmd, staging_buff, ren->tex_image.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &cpy);
+	vkCmdCopyBufferToImage(cmd, staging_buff, img->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &cpy);
+
+	VkImageSubresourceRange rsub = {
+		.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+		.levelCount = mip_levels,
+		.layerCount = 1,
+	};
+
+	VkImageMemoryBarrier2 read_bar = {
+		.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+		.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+		.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+		.dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+		.dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+		.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+		.newLayout = VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL,
+		.image = img->image,
+		.subresourceRange = rsub,
+
+	};
+
+	VkDependencyInfo read_dep = {
+		.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+		.imageMemoryBarrierCount = 1,
+		.pImageMemoryBarriers = &read_bar,
+	};
+
+	vkCmdPipelineBarrier2(cmd, &read_dep);
 	vk_end_one_time_cmds(ren, cmd);
 	vmaDestroyBuffer(ren->allocator, staging_buff, staging_alloc);
+	ren->texture_count += 1;
 }
 
-void vk_load_model(struct render_state *ren)
+void get_dir_path(char *name, const char *path)
 {
-	VkDeviceSize v_size = sizeof(vertices);
-	VkDeviceSize i_size = sizeof(indices);
+	char *slash = strrchr(path, '/');
+	char *back_slash = strrchr(path, '\\');
+
+	size_t len = 510;
+
+	if (back_slash) {
+		len = back_slash - path;
+	} else if (slash) {
+		len = slash - path;
+	}
+
+	snprintf(name, len + 2, "%s", path);
+
+	printf("dir: %s\n", name);
+}
+
+void vk_load_model(struct render_state *ren, char *path)
+{
+	cgltf_options opt = { 0 };
+	cgltf_data *data = NULL;
+	cgltf_result result = cgltf_parse_file(&opt, path, &data);
+	struct mesh *my_mesh = &ren->sponza_mesh;
+	my_mesh->vertex_offset = 0;
+
+	size_t vert_count = 0;
+	size_t ind_count = 0;
+	size_t prim_count = 0;
+	size_t img_offset = ren->texture_count;
+
+	char load_path[512];
+	get_dir_path(load_path, path);
+
+	if (result == cgltf_result_success) {
+		printf("mesh count: %lu\n", data->meshes[0].primitives_count);
+		if (cgltf_validate(data) != cgltf_result_success)
+			LOG_WARN("CGLTF::Failed to validate gltf file: %s", path);
+
+		result = cgltf_load_buffers(&opt, data, path);
+
+		for (size_t i = 0; i < data->meshes[0].primitives[0].attributes_count; i++) {
+			printf("accessor %lu: %s\n", i, data->meshes[0].primitives[0].attributes[i].name);
+		}
+
+		for (size_t i = 0; i < data->images_count; i++) {
+			char image_path[1024];
+			cgltf_image *img = &data->images[i];
+			snprintf(image_path, 1024, "%s%s", load_path, img->uri);
+			vk_load_texture(ren, image_path);
+		}
+
+		for (size_t i = 0; i < data->meshes_count; i++) {
+			cgltf_mesh *mesh = &data->meshes[i];
+			prim_count = mesh->primitives_count;
+			for (size_t j = 0; j < mesh->primitives_count; j++) {
+				cgltf_primitive *prim = &mesh->primitives[j];
+				vert_count += prim->attributes[0].data->count;
+				ind_count += prim->indices->count;
+			}
+		}
+
+		struct vertex *verts = malloc(sizeof(*verts) * vert_count);
+		u32 *indices = malloc(sizeof(u32) * ind_count);
+		my_mesh->sub_meshes = malloc(sizeof(*my_mesh->sub_meshes) * prim_count);
+		my_mesh->sub_mesh_count = prim_count;
+
+		u32 vert_offset = 0;
+		u32 ind_offset = 0;
+
+		for (size_t i = 0; i < data->meshes_count; i++) {
+			cgltf_mesh *mesh = &data->meshes[i];
+			for (size_t j = 0; j < mesh->primitives_count; j++) {
+				cgltf_primitive *prim = &mesh->primitives[j];
+				cgltf_accessor *vert_acc = prim->attributes[0].data;
+				cgltf_accessor *norm_acc = prim->attributes[2].data;
+				cgltf_accessor *uv_acc = prim->attributes[1].data;
+
+				for (size_t k = 0; k < vert_acc->count; k++) {
+					struct vertex *v = &verts[vert_offset + k];
+					cgltf_accessor_read_float(vert_acc, k, v->pos.raw, 3);
+				}
+
+				for (size_t k = 0; k < norm_acc->count; k++) {
+					struct vertex *v = &verts[vert_offset + k];
+					cgltf_accessor_read_float(norm_acc, k, v->norm.raw, 3);
+				}
+
+				for (size_t k = 0; k < uv_acc->count; k++) {
+					struct vertex *v = &verts[vert_offset + k];
+					cgltf_accessor_read_float(uv_acc, k, v->uv.raw, 2);
+				}
+
+				for (size_t k = 0; k < prim->indices->count; k++) {
+					u32 index = cgltf_accessor_read_index(prim->indices, k);
+					indices[ind_offset + k] = vert_offset + index;
+				}
+
+				u32 image_index =
+					prim->material->pbr_metallic_roughness.base_color_texture.texture->image -
+					data->images;
+
+				my_mesh->sub_meshes[j].tex = &ren->textures[img_offset + image_index];
+				my_mesh->sub_meshes[j].tex_index = img_offset + image_index;
+				my_mesh->sub_meshes[j].index_offset = ind_offset;
+				my_mesh->sub_meshes[j].index_count = prim->indices->count;
+
+				vert_offset += vert_acc->count;
+				ind_offset += prim->indices->count;
+			}
+		}
+
+		cgltf_free(data);
+
+		VkDeviceSize v_size = sizeof(struct vertex) * vert_count;
+		VkDeviceSize i_size = sizeof(u32) * ind_count;
+
+		VkBufferCreateInfo bci = {
+			.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+			.size = v_size + i_size,
+			.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+		};
+
+		VmaAllocationCreateInfo aci = {
+			.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+				 VMA_ALLOCATION_CREATE_HOST_ACCESS_ALLOW_TRANSFER_INSTEAD_BIT |
+				 VMA_ALLOCATION_CREATE_MAPPED_BIT,
+			.usage = VMA_MEMORY_USAGE_AUTO,
+		};
+
+		VmaAllocationInfo info;
+
+		vk_chk(vmaCreateBuffer(ren->allocator, &bci, &aci, &my_mesh->buff, &my_mesh->alloc, &info),
+		       "Allocating Sponza Vertex Buffer");
+		vmaSetAllocationName(ren->allocator, my_mesh->alloc, "Sponza Vertex Buffer");
+
+		memcpy(info.pMappedData, verts, v_size);
+		memcpy(((char *)info.pMappedData) + v_size, indices, i_size);
+		my_mesh->ind_offset = v_size;
+		// ren->sponza_i_offset = v_size;
+		// ren->sponza_index_count = ind_count;
+	} else {
+		LOG_ERR("CGLTF::Failed to load model: %s", path);
+		return;
+	}
+}
+
+void vk_create_quad(struct render_state *ren)
+{
+	VkDeviceSize v_size = sizeof(quad_verts);
+	VkDeviceSize i_size = sizeof(quad_indices);
 
 	VkBufferCreateInfo bci = {
 		.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
@@ -721,8 +887,8 @@ void vk_load_model(struct render_state *ren)
 	       "Allocating Vertex Buffer");
 	vmaSetAllocationName(ren->allocator, ren->vert_alloc, "Vertex Buffer");
 
-	memcpy(info.pMappedData, vertices, v_size);
-	memcpy(((char *)info.pMappedData) + v_size, indices, i_size);
+	memcpy(info.pMappedData, quad_verts, v_size);
+	memcpy(((char *)info.pMappedData) + v_size, quad_indices, i_size);
 }
 
 void vk_load_shaders(struct render_state *ren)
@@ -740,19 +906,22 @@ void vk_load_shaders(struct render_state *ren)
 
 void vk_create_descriptor_pool(struct render_state *ren)
 {
-	VkDescriptorPoolSize pool_sizes[2];
+	VkDescriptorPoolSize pool_sizes[3];
 
 	pool_sizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 	pool_sizes[0].descriptorCount = 1000;
 
-	pool_sizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+	pool_sizes[1].type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
 	pool_sizes[1].descriptorCount = 1000;
+
+	pool_sizes[2].type = VK_DESCRIPTOR_TYPE_SAMPLER;
+	pool_sizes[2].descriptorCount = 2;
 
 	VkDescriptorPoolCreateInfo pci = {
 		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
 		.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT,
 		.maxSets = 1000,
-		.poolSizeCount = 2,
+		.poolSizeCount = 3,
 		.pPoolSizes = pool_sizes,
 	};
 
@@ -798,16 +967,88 @@ void vk_create_descriptor_sets(struct render_state *ren)
 	}
 
 	free(layouts);
+
+	VkDescriptorSetAllocateInfo ai_tex = {
+		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+		.descriptorPool = ren->desc_pool,
+		.descriptorSetCount = 1,
+		.pSetLayouts = &ren->set_layout_tex,
+	};
+
+	vk_chk(vkAllocateDescriptorSets(ren->device, &ai_tex, &ren->set_tex), "Allocating Descriptor Sets");
+
+	// VkDescriptorImageInfo iinfo = {
+	// 	.imageView = ren->tex_image.view,
+	// 	.imageLayout = VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL,
+	// };
+
+	VkDescriptorImageInfo image_infos[512] = { 0 };
+
+	printf("Num textures: %u\n", ren->texture_count);
+	for (u32 i = 0; i < ren->texture_count; i++) {
+		image_infos[i].imageView = ren->textures[i].view;
+		image_infos[i].imageLayout = VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL;
+	}
+
+	VkDescriptorImageInfo iinfo2 = {
+		.sampler = ren->sampler,
+	};
+
+	VkWriteDescriptorSet write_image[2] = {
+		{
+			.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+			.dstSet = ren->set_tex,
+			.dstBinding = 0,
+			.descriptorCount = ren->texture_count,
+			.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+			.pImageInfo = image_infos,
+		},
+		{
+			.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+			.dstSet = ren->set_tex,
+			.dstBinding = 1,
+			.descriptorCount = 1,
+			.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER,
+			.pImageInfo = &iinfo2,
+		},
+	};
+
+	vkUpdateDescriptorSets(ren->device, 2, write_image, 0, NULL);
+}
+
+void vk_create_sampler(struct render_state *ren)
+{
+	VkSamplerCreateInfo sci = {
+		.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+		.minFilter = VK_FILTER_LINEAR,
+		.magFilter = VK_FILTER_LINEAR,
+		.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR,
+		.anisotropyEnable = VK_TRUE,
+		.maxAnisotropy = 8.0f,
+		.maxLod = 0,
+	};
+
+	vk_chk(vkCreateSampler(ren->device, &sci, NULL, &ren->sampler), "Creating Sampler");
 }
 
 void vk_create_descriptor_set_layout(struct render_state *ren)
 {
-	VkDescriptorSetLayoutBinding bindings[1];
+	VkDescriptorSetLayoutBinding bindings[3] = { 0 };
 
 	bindings[0].binding = 0;
 	bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 	bindings[0].descriptorCount = 1;
 	bindings[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+	bindings[1].binding = 0;
+	bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+	bindings[1].descriptorCount = ren->texture_count;
+	bindings[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+	bindings[2].binding = 1;
+	bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+	bindings[2].descriptorCount = 1;
+	bindings[2].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
 	VkDescriptorSetLayoutCreateInfo dci = {
 		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
@@ -815,20 +1056,35 @@ void vk_create_descriptor_set_layout(struct render_state *ren)
 		.pBindings = bindings,
 	};
 
-	vkCreateDescriptorSetLayout(ren->device, &dci, NULL, &ren->set_layout_buf);
+	vk_chk(vkCreateDescriptorSetLayout(ren->device, &dci, NULL, &ren->set_layout_buf),
+	       "Creating Descriptor Layout");
+
+	VkDescriptorSetLayoutCreateInfo dci2 = {
+		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+		.bindingCount = 2,
+		.pBindings = &bindings[1],
+	};
+
+	vk_chk(vkCreateDescriptorSetLayout(ren->device, &dci2, NULL, &ren->set_layout_tex),
+	       "Creating Descriptor Layout");
 }
 
 void vk_create_pipeline(struct render_state *ren)
 {
 	VkPushConstantRange pushConstantRange = {
-		.stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
-		.size = sizeof(VkDeviceAddress),
+		.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+		.size = sizeof(struct push_constants),
+	};
+
+	VkDescriptorSetLayout layouts[2] = {
+		ren->set_layout_buf,
+		ren->set_layout_tex,
 	};
 
 	VkPipelineLayoutCreateInfo pipelineLayoutCI = {
 		.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-		.setLayoutCount = 1,
-		.pSetLayouts = &ren->set_layout_buf, //TODO: texture set layout
+		.setLayoutCount = 2,
+		.pSetLayouts = layouts,
 		.pushConstantRangeCount = 1,
 		.pPushConstantRanges = &pushConstantRange,
 	};
@@ -838,26 +1094,32 @@ void vk_create_pipeline(struct render_state *ren)
 
 	VkVertexInputBindingDescription vertexBinding = {
 		.binding = 0,
-		.stride = sizeof(float) * 4,
+		.stride = sizeof(float) * 8,
 		.inputRate = VK_VERTEX_INPUT_RATE_VERTEX,
 	};
 
-	VkVertexInputAttributeDescription vertexAttributes[2] = {
-		{ .location = 0, .binding = 0, .format = VK_FORMAT_R32G32_SFLOAT },
-		{ .location = 1, .binding = 0, .format = VK_FORMAT_R32G32_SFLOAT, .offset = sizeof(float) * 2 },
+	VkVertexInputAttributeDescription vertexAttributes[3] = {
+		{ .location = 0, .binding = 0, .format = VK_FORMAT_R32G32B32_SFLOAT },
+		{ .location = 1, .binding = 0, .format = VK_FORMAT_R32G32B32_SFLOAT, .offset = sizeof(float) * 3 },
+		{ .location = 2, .binding = 0, .format = VK_FORMAT_R32G32_SFLOAT, .offset = sizeof(float) * 6 },
 	};
 
 	VkPipelineVertexInputStateCreateInfo vertexInputState = {
 		.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
 		.vertexBindingDescriptionCount = 1,
 		.pVertexBindingDescriptions = &vertexBinding,
-		.vertexAttributeDescriptionCount = 2,
+		.vertexAttributeDescriptionCount = 3,
 		.pVertexAttributeDescriptions = vertexAttributes,
 	};
 
+	// VkPipelineInputAssemblyStateCreateInfo inputAssemblyState = {
+	// 	.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+	// 	.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP,
+	// };
+
 	VkPipelineInputAssemblyStateCreateInfo inputAssemblyState = {
 		.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
-		.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP,
+		.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
 	};
 
 	VkPipelineShaderStageCreateInfo shaderStages[2] = {
@@ -911,7 +1173,9 @@ void vk_create_pipeline(struct render_state *ren)
 	};
 
 	VkPipelineRasterizationStateCreateInfo rasterizationState = {
-		.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO, .lineWidth = 1.0f
+		.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+		.polygonMode = VK_POLYGON_MODE_FILL,
+		.lineWidth = 1.0f,
 	};
 
 	VkPipelineMultisampleStateCreateInfo multisampleState = {
@@ -955,9 +1219,11 @@ void vk_init(struct render_state *ren, struct window *win)
 	vk_create_uniform_buffers(ren);
 	vk_create_sync_objects(ren);
 	vk_allocate_command_buffers(ren);
-	vk_load_texture(ren);
-	vk_load_model(ren);
+	vk_create_sampler(ren);
+	vk_load_texture(ren, "../../res/texture.jpg");
+	vk_create_quad(ren);
 	vk_load_shaders(ren);
+	vk_load_model(ren, "../../res/models/sponza/Sponza.gltf");
 	vk_create_descriptor_pool(ren);
 	vk_create_descriptor_set_layout(ren);
 	vk_create_descriptor_sets(ren);
@@ -985,10 +1251,12 @@ void vk_cleanup(struct render_state *ren, struct window *win)
 
 	vmaDestroyBuffer(ren->allocator, ren->vert_buff, ren->vert_alloc);
 
-	vkDestroyImageView(ren->device, ren->tex_image.view, NULL);
-	vmaDestroyImage(ren->allocator, ren->tex_image.image, ren->tex_image.alloc);
+	// vkDestroyImageView(ren->device, ren->tex_image.view, NULL);
+	vkDestroySampler(ren->device, ren->sampler, NULL);
+	// vmaDestroyImage(ren->allocator, ren->tex_image.image, ren->tex_image.alloc);
 
 	vkDestroyDescriptorSetLayout(ren->device, ren->set_layout_buf, NULL);
+	vkDestroyDescriptorSetLayout(ren->device, ren->set_layout_tex, NULL);
 	vkDestroyDescriptorPool(ren->device, ren->desc_pool, NULL);
 	vkDestroyPipelineLayout(ren->device, ren->pipeline_layout, NULL);
 	vkDestroyPipeline(ren->device, ren->pipeline, NULL);
@@ -1021,38 +1289,54 @@ void vk_update_uniforms(struct render_state *ren)
 	SDL_GetMouseState(&mouse_pos.x, &mouse_pos.y);
 	ren->player_pos = vec2_lerp(ren->player_pos, mouse_pos, 0.01f);
 	ren->uniforms.pos = ren->player_pos;
-	ren->uniforms.color.r = 0.0f;
-	ren->uniforms.color.g = 1.0f;
+	ren->uniforms.color.r = 1.0f;
+	ren->uniforms.color.g = 0.0f;
 	ren->uniforms.color.b = 0.0f;
 	ren->uniforms.color.a = 1.0f;
 
-	ren->test_uniforms.test_color.r = 0.0f;
-	ren->test_uniforms.test_color.g = 0.0f;
-	ren->test_uniforms.test_color.b = 0.2f;
-	ren->test_uniforms.test_color.a = 1.0f;
+	ren->uniforms.proj = glms_perspective(glm_rad(78.0f), 800.0f / 600.0f, 0.1f, 10000.0f);
+	vec3s eye = { { 0.0f, 0.0f, 0.0f } };
+	vec3s center = { { 0.0f, 0.0f, 10.0f } };
+	vec3s up = { { 0.0f, -1.0f, 0.0f } };
+
+	ren->uniforms.view = glms_lookat(eye, center, up);
+
+	ren->rot += ren->delta_time * 20.0f;
+
+	vec3s rads = { glm_rad(ren->sponza_transform.rot.x), glm_rad(ren->sponza_transform.rot.y),
+		       glm_rad(ren->sponza_transform.rot.z) };
+	versors rot = glms_euler_zyx_quat(rads);
+
+	mat4s T = glms_translate(GLMS_MAT4_IDENTITY, ren->sponza_transform.pos);
+	mat4s R = glms_quat_mat4(rot);
+	mat4s S = glms_scale(GLMS_MAT4_IDENTITY, ren->sponza_transform.scale);
+
+	ren->uniforms.model = glms_mat4_mul(T, glms_mat4_mul(R, S));
 }
 
 void vk_draw_frame(struct render_state *ren, struct window *win)
 {
 	u32 frame = ren->frame_index;
-	vk_chk(vkWaitForFences(ren->device, 1, &ren->fences[frame], true, UINT64_MAX), NULL);
-	vk_chk(vkResetFences(ren->device, 1, &ren->fences[frame]), NULL);
+	vk_chk(vkWaitForFences(ren->device, 1, &ren->fences[frame], true, UINT64_MAX), "Waiting for fences");
+	vk_chk(vkResetFences(ren->device, 1, &ren->fences[frame]), "reseting fences");
 	vkAcquireNextImageKHR(ren->device, ren->swapchain, UINT64_MAX, ren->img_sems[frame], VK_NULL_HANDLE,
 			      &ren->image_index);
 
 	//help me
 	vk_update_uniforms(ren);
-	memcpy(ren->ubuf[frame].info.pMappedData, &ren->uniforms, sizeof(struct uniform_data));
-	memcpy(ren->test_uniform_buf[frame].info.pMappedData, &ren->test_uniforms, sizeof(struct uniform_test));
 
-	VkCommandBuffer cb = ren->cmds[frame];
-	vk_chk(vkResetCommandBuffer(cb, 0), NULL);
+	// ren->test_uniforms.add= ren->ubuf[frame].addr;
+
+	memcpy(ren->ubuf[frame].info.pMappedData, &ren->uniforms, sizeof(struct uniform_data));
+
+	VkCommandBuffer cmd = ren->cmds[frame];
+	vk_chk(vkResetCommandBuffer(cmd, 0), "resetting cmd buffer");
 	VkCommandBufferBeginInfo cbi = {
 		.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
 		.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
 	};
 
-	vk_chk(vkBeginCommandBuffer(cb, &cbi), NULL);
+	vk_chk(vkBeginCommandBuffer(cmd, &cbi), "Begin cmd buffer");
 
 	VkImageMemoryBarrier2 outputBarriers[2] = {
 		(VkImageMemoryBarrier2){
@@ -1089,7 +1373,7 @@ void vk_draw_frame(struct render_state *ren, struct window *win)
 		.pImageMemoryBarriers = outputBarriers,
 	};
 
-	vkCmdPipelineBarrier2(cb, &barrierDependencyInfo);
+	vkCmdPipelineBarrier2(cmd, &barrierDependencyInfo);
 
 	VkRenderingAttachmentInfo colorAttachmentInfo = {
 		.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
@@ -1118,7 +1402,7 @@ void vk_draw_frame(struct render_state *ren, struct window *win)
 		.pDepthAttachment = &depthAttachmentInfo,
 	};
 
-	vkCmdBeginRendering(cb, &renderingInfo);
+	vkCmdBeginRendering(cmd, &renderingInfo);
 
 	VkViewport vp = {
 		.width = win->w,
@@ -1127,28 +1411,57 @@ void vk_draw_frame(struct render_state *ren, struct window *win)
 		.maxDepth = 1.0f,
 	};
 
-	vkCmdSetViewport(cb, 0, 1, &vp);
+	vkCmdSetViewport(cmd, 0, 1, &vp);
 	VkRect2D scissor = {
 		.extent = { .width = win->w, .height = win->h },
 	};
 
-	vkCmdSetScissor(cb, 0, 1, &scissor);
+	vkCmdSetScissor(cmd, 0, 1, &scissor);
 
-	vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, ren->pipeline);
-	VkDeviceSize vOffset = 0;
+	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, ren->pipeline);
+	// VkDeviceSize vOffset = 0;
 
-	//TODO: Bind texture descriptor sets
-	// vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSetTex, 0,
-	// 			nullptr);
+	// vkCmdBindVertexBuffers(cmd, 0, 1, &ren->vert_buff, &vOffset);
+	// vkCmdBindIndexBuffer(cmd, ren->vert_buff, sizeof(vertices), VK_INDEX_TYPE_UINT32);
 
-	vkCmdBindVertexBuffers(cb, 0, 1, &ren->vert_buff, &vOffset);
-	vkCmdBindIndexBuffer(cb, ren->vert_buff, sizeof(vertices), VK_INDEX_TYPE_UINT32);
-	vkCmdPushConstants(cb, ren->pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(VkDeviceAddress),
-			   &ren->ubuf[frame].addr);
-	vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, ren->pipeline_layout, 0, 1, &ren->set_test[frame],
-				0, NULL);
-	vkCmdDrawIndexed(cb, sizeof(indices) / sizeof(indices[0]), 1, 0, 0, 0);
-	vkCmdEndRendering(cb);
+	struct push_constants pc = {
+		.bda = ren->ubuf[frame].addr,
+		.tex_ind = 0,
+	};
+
+	vkCmdBindVertexBuffers(cmd, 0, 1, &ren->sponza_mesh.buff, &ren->sponza_mesh.vertex_offset);
+	vkCmdBindIndexBuffer(cmd, ren->sponza_mesh.buff, ren->sponza_mesh.ind_offset, VK_INDEX_TYPE_UINT32);
+	// vkCmdPushConstants(cmd, ren->pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+	// 		   sizeof(pc), &pc);
+
+	for (u32 i = 0; i < ren->sponza_mesh.sub_mesh_count; i++) {
+		struct submesh *sm = &ren->sponza_mesh.sub_meshes[i];
+
+		VkDescriptorSet sets[2] = {
+			ren->set_test[frame],
+			ren->set_tex,
+		};
+
+		pc.tex_ind = sm->tex_index;
+
+		vkCmdPushConstants(cmd, ren->pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+				   0, sizeof(pc), &pc);
+		// ren->test_uniforms.tex_index = sm->tex_index;
+		// memcpy(ren->test_uniform_buf[frame].info.pMappedData, &ren->test_uniforms, sizeof(struct uniform_test));
+
+		vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, ren->pipeline_layout, 0, 2, sets, 0,
+					NULL);
+		// vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, ren->pipeline_layout, 1, 1, &ren->set_tex, 0,
+		// 			NULL);
+		// vkCmdDrawIndexed(cmd, sizeof(indices) / sizeof(indices[0]), 1, 0, 0, 0);
+		//
+
+		// vkCmdDrawIndexed(cmd, ren->sponza_index_count, 1, 0, 0, 0);
+		vkCmdDrawIndexed(cmd, sm->index_count, 1, sm->index_offset, 0, 0);
+	}
+
+	cImGui_ImplVulkan_RenderDrawData(ren->imgui_draw_data, cmd);
+	vkCmdEndRendering(cmd);
 
 	VkImageMemoryBarrier2 barrierPresent = {
 		.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
@@ -1168,9 +1481,9 @@ void vk_draw_frame(struct render_state *ren, struct window *win)
 		.pImageMemoryBarriers = &barrierPresent,
 	};
 
-	vkCmdPipelineBarrier2(cb, &barrierPresentDependencyInfo);
+	vkCmdPipelineBarrier2(cmd, &barrierPresentDependencyInfo);
 
-	vkEndCommandBuffer(cb);
+	vkEndCommandBuffer(cmd);
 
 	VkPipelineStageFlags waitStages = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
 	VkSubmitInfo submitInfo = {
@@ -1179,12 +1492,12 @@ void vk_draw_frame(struct render_state *ren, struct window *win)
 		.pWaitSemaphores = &ren->img_sems[frame],
 		.pWaitDstStageMask = &waitStages,
 		.commandBufferCount = 1,
-		.pCommandBuffers = &cb,
+		.pCommandBuffers = &cmd,
 		.signalSemaphoreCount = 1,
 		.pSignalSemaphores = &ren->ren_sems[ren->image_index],
 	};
 
-	vk_chk(vkQueueSubmit(ren->gfx_q, 1, &submitInfo, ren->fences[frame]), NULL);
+	vk_chk(vkQueueSubmit(ren->gfx_q, 1, &submitInfo, ren->fences[frame]), "submitting queue");
 
 	// frameIndex = (frameIndex + 1) % maxFramesInFlight;
 	ren->frame_index = (ren->frame_index + 1) % FIF;
@@ -1205,6 +1518,7 @@ void poll_events(struct window *win)
 {
 	SDL_Event event;
 	while (SDL_PollEvent(&event)) {
+		cImGui_ImplSDL3_ProcessEvent(&event);
 		switch (event.type) {
 		case SDL_EVENT_QUIT:
 			win->should_close = true;
@@ -1216,16 +1530,27 @@ void poll_events(struct window *win)
 
 int main()
 {
-	struct render_state ren;
-	struct window win;
+	struct render_state ren = { 0 };
+	struct window win = { 0 };
+
+	ren.textures = malloc(sizeof(*ren.textures) * 1000);
 
 	sdl_chk(SDL_Init(SDL_INIT_VIDEO), "Initializing");
 	vk_init(&ren, &win);
+	imgui_init(&ren, &win);
 
+	ren.sponza_transform.scale = (vec3s){ 0.01f, 0.01f, 0.01f };
+	ren.sponza_transform.rot.y = 90.0f;
 	win.should_close = false;
 
+	ren.last_time = SDL_GetTicks() / 1000.0f;
+
 	while (!win.should_close) {
+		float time = SDL_GetTicks() / 1000.0f;
+		ren.delta_time = time - ren.last_time;
+		ren.last_time = time;
 		poll_events(&win);
+		draw_imgui(&ren);
 		vk_draw_frame(&ren, &win);
 	}
 

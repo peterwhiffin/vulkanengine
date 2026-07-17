@@ -2,17 +2,35 @@
 #include "stdint.h"
 
 #include "SDL3/SDL_video.h"
-#include "volk.h"
+// #include "volk.h"
 #include "vk_mem_alloc.h"
+
+#include "cglm/struct/affine.h"
+#include "cglm/struct/euler.h"
+#include "cglm/struct/mat4.h"
+#include "cglm/struct/vec3.h"
+#include "cglm/struct/quat.h"
 #include "cglm/types-struct.h"
+#include "cglm/struct/cam.h"
+// #include "cglm/types.h"
+#include "cglm/util.h"
+
+#include "imgui/dcimgui_impl_vulkan.h"
+// #include "imgui/dcimgui.h"
 
 typedef uint8_t u8;
 typedef uint32_t u32;
 
+struct transform {
+	vec3s pos;
+	vec3s rot;
+	vec3s scale;
+};
+
 struct vertex {
 	vec3s pos;
 	vec3s norm;
-	vec3s uv;
+	vec2s uv;
 };
 
 struct uniform_buffer {
@@ -22,9 +40,36 @@ struct uniform_buffer {
 	VkDeviceAddress addr;
 };
 
+struct image {
+	VkImage image;
+	VkImageView view;
+	VmaAllocation alloc;
+};
+
+struct submesh {
+	VkDeviceSize index_offset;
+	VkDeviceSize index_count;
+	VkDescriptorSet *desc_sets;
+	u32 tex_index;
+	struct image *tex;
+};
+
+struct mesh {
+	VkBuffer buff;
+	VkDeviceSize ind_offset;
+	VkDeviceSize vertex_offset;
+	VmaAllocation alloc;
+	struct submesh *sub_meshes;
+	u32 sub_mesh_count;
+};
+
 struct uniform_data {
+	mat4s proj;
+	mat4s view;
+	mat4s model;
 	vec4s color;
 	vec2s pos;
+	vec2s test;
 	float time;
 
 	// mat4s proj;
@@ -34,13 +79,22 @@ struct uniform_data {
 };
 
 struct uniform_test {
-	vec4s test_color;
+	u32 tex_index;
 };
 
-struct image {
-	VkImage image;
-	VkImageView view;
-	VmaAllocation alloc;
+struct push_constants {
+	VkDeviceAddress bda;
+	u32 tex_ind;
+};
+
+struct material {
+	u32 albedo_index;
+	vec4s color;
+};
+
+struct mesh_renderer {
+	struct mesh *mesh;
+	u32 material_index;
 };
 
 struct render_state {
@@ -63,10 +117,13 @@ struct render_state {
 	VkDescriptorSet set_tex;
 	VkDescriptorSet *set_test;
 	VkBuffer vert_buff;
+	VkBuffer sponza_vert_buff;
+	VkSampler sampler;
 	VkShaderModule shader;
 	VkPipelineLayout pipeline_layout;
 	VkPipeline pipeline;
 	VmaAllocation vert_alloc;
+	VmaAllocation sponza_vert_alloc;
 	struct uniform_buffer *ubuf;
 	struct uniform_buffer *test_uniform_buf;
 	struct uniform_data uniforms;
@@ -74,13 +131,35 @@ struct render_state {
 	u32 swap_count;
 	struct image *swap_images;
 	struct image depth_image;
-	struct image tex_image;
+	// struct image tex_image;
 	VmaAllocator allocator;
 	u32 gfx_q_fam;
 	u32 frame_index;
 	u32 image_index;
+	VkDeviceSize sponza_i_offset;
+	VkDeviceSize sponza_index_count;
+	struct mesh sponza_mesh;
+	u32 mesh_count;
+	struct image *textures;
+
+	VkDescriptorSet set_global;
+	u32 texture_count;
 	bool update_swap;
 	vec2s player_pos;
+	float last_time;
+	float delta_time;
+	float rot;
+
+	struct transform sponza_transform;
+	ImDrawData *imgui_draw_data;
+};
+
+struct render_pass {
+	VkPipelineLayout pipeline_layout;
+	VkPipeline pipeline;
+	VkDescriptorSet set_per_frame;
+	VkRenderingAttachmentInfo attachments;
+	VkRenderingInfo info;
 };
 
 struct window {

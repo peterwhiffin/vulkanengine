@@ -31,6 +31,7 @@ INCLUDES=(
 LIB_PATHS=(
 	-L"./lib/lin"
 	-L"./lib/lin/vma"
+	-L"./lib/lin/imgui"
 	-L"$VULKAN_SDK/lib"
 )
 
@@ -40,6 +41,7 @@ LIBS=(
 	-lm
 	-lslang
 	-lvma
+	-limgui
 	-lstdc++
 )
 
