@@ -13,7 +13,7 @@ SRC=(
 FLAGS=(
 	-std=c23
 	-g
-	-Wall
+	# -Wall
 )
 
 DEFINES=(

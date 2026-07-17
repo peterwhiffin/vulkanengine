@@ -5,15 +5,10 @@
 // #include "volk.h"
 #include "vk_mem_alloc.h"
 
-#include "cglm/struct/affine.h"
-#include "cglm/struct/euler.h"
-#include "cglm/struct/mat4.h"
-#include "cglm/struct/vec3.h"
-#include "cglm/struct/quat.h"
 #include "cglm/types-struct.h"
-#include "cglm/struct/cam.h"
+// #include "cglm/struct/cam.h"
 // #include "cglm/types.h"
-#include "cglm/util.h"
+// #include "cglm/util.h"
 
 #include "imgui/dcimgui_impl_vulkan.h"
 // #include "imgui/dcimgui.h"
@@ -49,7 +44,7 @@ struct image {
 struct submesh {
 	VkDeviceSize index_offset;
 	VkDeviceSize index_count;
-	VkDescriptorSet *desc_sets;
+	// VkDescriptorSet *desc_sets;
 	u32 tex_index;
 	struct image *tex;
 };
@@ -59,23 +54,21 @@ struct mesh {
 	VkDeviceSize ind_offset;
 	VkDeviceSize vertex_offset;
 	VmaAllocation alloc;
-	struct submesh *sub_meshes;
-	u32 sub_mesh_count;
+	struct submesh *submeshes;
+	u32 submesh_count;
 };
 
 struct uniform_data {
 	mat4s proj;
 	mat4s view;
-	mat4s model;
 	vec4s color;
 	vec2s pos;
 	vec2s test;
 	float time;
+};
 
-	// mat4s proj;
-	// mat4s view;
-	// mat4s model[3];
-	// vec4s light_pos;
+struct entity_uniforms {
+	mat4s model;
 };
 
 struct uniform_test {
@@ -94,7 +87,37 @@ struct material {
 
 struct mesh_renderer {
 	struct mesh *mesh;
+	struct entity_uniforms uniforms;
+	struct uniform_buffer *buffs;
+	VkDescriptorSet *sets;
 	u32 material_index;
+};
+
+struct rigidbody {
+	u32 id;
+};
+
+enum entity_flags {
+	NONE = 0,
+	MESH_RENDERER = 1 << 1,
+	RIGIDBODY = 1 << 2,
+	CAMERA = 1 << 3,
+};
+
+struct camera {
+	mat4 proj;
+	mat4 view;
+	float fov;
+	bool is_perspective;
+};
+
+struct entity {
+	char name[128];
+	u8 flags;
+	struct transform transform;
+	struct mesh_renderer mesh_renderer;
+	struct rigidbody rigidbody;
+	struct camera camera;
 };
 
 struct render_state {
@@ -112,6 +135,7 @@ struct render_state {
 	VkSemaphore *ren_sems;
 	VkDebugUtilsMessengerEXT debug_messenger;
 	VkDescriptorSetLayout set_layout_tex;
+	VkDescriptorSetLayout set_layout_entity;
 	VkDescriptorSetLayout set_layout_buf;
 	VkDescriptorPool desc_pool;
 	VkDescriptorSet set_tex;
@@ -138,8 +162,11 @@ struct render_state {
 	u32 image_index;
 	VkDeviceSize sponza_i_offset;
 	VkDeviceSize sponza_index_count;
-	struct mesh sponza_mesh;
+	struct mesh *meshes;
 	u32 mesh_count;
+	struct entity *entities;
+	u32 entity_count;
+	// struct mesh sponza_mesh;
 	struct image *textures;
 
 	VkDescriptorSet set_global;
@@ -148,9 +175,8 @@ struct render_state {
 	vec2s player_pos;
 	float last_time;
 	float delta_time;
-	float rot;
 
-	struct transform sponza_transform;
+	// struct transform sponza_transform;
 	ImDrawData *imgui_draw_data;
 };
 

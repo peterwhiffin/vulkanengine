@@ -21,10 +21,13 @@ struct VSInput {
 struct ShaderData {
 	float4x4 proj;
 	float4x4 view;
-	float4x4 model;
 	float4 color;
 	float2 pos;
 	float time;
+};
+
+struct entity {
+	float4x4 model;
 };
 
 struct VSOutput {
@@ -54,13 +57,16 @@ Texture2D<float4> tex[];
 [[vk::binding(1, 1)]]
 SamplerState sampler;
 
+[[vk::binding(0, 2)]]
+ConstantBuffer<entity> ebuf;
+
 [shader("vertex")]
 VSOutput vertMain(VSInput input, uniform push_const pc)
 {
 	ShaderData *shaderData = pc.shaderData;
 	VSOutput output;
 	// output.Pos = float4(input.Pos, 0.0, 1.0);
-	output.Pos = mul(shaderData.proj, mul(shaderData.view, mul(shaderData.model, float4(input.Pos.xyz, 1.0))));
+	output.Pos = mul(shaderData.proj, mul(shaderData.view, mul(ebuf.model, float4(input.Pos.xyz, 1.0))));
 	output.Norm = input.norm;
 	output.UV = input.UV;
 	output.color = shaderData.color;

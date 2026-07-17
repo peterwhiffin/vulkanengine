@@ -14,6 +14,8 @@
 #define CGLTF_IMPLEMENTATION
 #include "cgltf.h"
 
+#include "cglm/struct.h"
+
 #include "log.h"
 #include "types.h"
 
@@ -512,6 +514,39 @@ void vk_create_uniform_buffers(struct render_state *ren)
 	}
 }
 
+void vk_create_entity_uniform_buffer(struct render_state *ren, struct entity *e)
+{
+	struct mesh_renderer *mr = &e->mesh_renderer;
+	mr->buffs = malloc(sizeof(*mr->buffs) * FIF);
+
+	for (int i = 0; i < FIF; i++) {
+		VkBufferCreateInfo bci = {
+			.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+			.pNext = NULL,
+			.flags = 0,
+			.size = sizeof(struct entity_uniforms),
+			.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+			.sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+			.queueFamilyIndexCount = 0,
+			.pQueueFamilyIndices = NULL,
+		};
+
+		VmaAllocationCreateInfo aci = {
+			.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+				 VMA_ALLOCATION_CREATE_HOST_ACCESS_ALLOW_TRANSFER_INSTEAD_BIT |
+				 VMA_ALLOCATION_CREATE_MAPPED_BIT,
+			.usage = VMA_MEMORY_USAGE_AUTO,
+		};
+
+		vk_chk(vmaCreateBuffer(ren->allocator, &bci, &aci, &mr->buffs[i].buf, &mr->buffs[i].alloc,
+				       &mr->buffs[i].info),
+		       "Allocating Test Uniform Buffer");
+		vmaSetAllocationName(ren->allocator, mr->buffs[i].alloc, "Entity Uniform Buffer");
+
+		mr->buffs->addr = 0;
+	}
+}
+
 void vk_create_sync_objects(struct render_state *ren)
 {
 	ren->fences = malloc(sizeof(*ren->fences) * FIF);
@@ -718,8 +753,8 @@ void vk_load_texture(struct render_state *ren, char *file)
 
 void get_dir_path(char *name, const char *path)
 {
-	char *slash = strrchr(path, '/');
-	char *back_slash = strrchr(path, '\\');
+	char const *slash = strrchr(path, '/');
+	char const *back_slash = strrchr(path, '\\');
 
 	size_t len = 510;
 
@@ -734,12 +769,21 @@ void get_dir_path(char *name, const char *path)
 	printf("dir: %s\n", name);
 }
 
-void vk_load_model(struct render_state *ren, char *path)
+struct mesh *get_new_mesh(struct render_state *ren)
+{
+	struct mesh *m = &ren->meshes[ren->mesh_count];
+	ren->mesh_count += 1;
+	*m = (struct mesh){ 0 };
+	return m;
+}
+
+struct mesh *vk_load_model(struct render_state *ren, char *path)
 {
 	cgltf_options opt = { 0 };
 	cgltf_data *data = NULL;
 	cgltf_result result = cgltf_parse_file(&opt, path, &data);
-	struct mesh *my_mesh = &ren->sponza_mesh;
+	struct mesh *my_mesh = get_new_mesh(ren);
+
 	my_mesh->vertex_offset = 0;
 
 	size_t vert_count = 0;
@@ -780,8 +824,8 @@ void vk_load_model(struct render_state *ren, char *path)
 
 		struct vertex *verts = malloc(sizeof(*verts) * vert_count);
 		u32 *indices = malloc(sizeof(u32) * ind_count);
-		my_mesh->sub_meshes = malloc(sizeof(*my_mesh->sub_meshes) * prim_count);
-		my_mesh->sub_mesh_count = prim_count;
+		my_mesh->submeshes = malloc(sizeof(*my_mesh->submeshes) * prim_count);
+		my_mesh->submesh_count = prim_count;
 
 		u32 vert_offset = 0;
 		u32 ind_offset = 0;
@@ -818,10 +862,10 @@ void vk_load_model(struct render_state *ren, char *path)
 					prim->material->pbr_metallic_roughness.base_color_texture.texture->image -
 					data->images;
 
-				my_mesh->sub_meshes[j].tex = &ren->textures[img_offset + image_index];
-				my_mesh->sub_meshes[j].tex_index = img_offset + image_index;
-				my_mesh->sub_meshes[j].index_offset = ind_offset;
-				my_mesh->sub_meshes[j].index_count = prim->indices->count;
+				my_mesh->submeshes[j].tex = &ren->textures[img_offset + image_index];
+				my_mesh->submeshes[j].tex_index = img_offset + image_index;
+				my_mesh->submeshes[j].index_offset = ind_offset;
+				my_mesh->submeshes[j].index_count = prim->indices->count;
 
 				vert_offset += vert_acc->count;
 				ind_offset += prim->indices->count;
@@ -855,12 +899,15 @@ void vk_load_model(struct render_state *ren, char *path)
 		memcpy(info.pMappedData, verts, v_size);
 		memcpy(((char *)info.pMappedData) + v_size, indices, i_size);
 		my_mesh->ind_offset = v_size;
+		printf("ind offset: %lu\n", v_size);
 		// ren->sponza_i_offset = v_size;
 		// ren->sponza_index_count = ind_count;
 	} else {
 		LOG_ERR("CGLTF::Failed to load model: %s", path);
-		return;
+		return NULL;
 	}
+
+	return my_mesh;
 }
 
 void vk_create_quad(struct render_state *ren)
@@ -909,10 +956,10 @@ void vk_create_descriptor_pool(struct render_state *ren)
 	VkDescriptorPoolSize pool_sizes[3];
 
 	pool_sizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-	pool_sizes[0].descriptorCount = 1000;
+	pool_sizes[0].descriptorCount = 10000;
 
 	pool_sizes[1].type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-	pool_sizes[1].descriptorCount = 1000;
+	pool_sizes[1].descriptorCount = 10000;
 
 	pool_sizes[2].type = VK_DESCRIPTOR_TYPE_SAMPLER;
 	pool_sizes[2].descriptorCount = 2;
@@ -920,12 +967,54 @@ void vk_create_descriptor_pool(struct render_state *ren)
 	VkDescriptorPoolCreateInfo pci = {
 		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
 		.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT,
-		.maxSets = 1000,
+		.maxSets = 10000,
 		.poolSizeCount = 3,
 		.pPoolSizes = pool_sizes,
 	};
 
 	vk_chk(vkCreateDescriptorPool(ren->device, &pci, NULL, &ren->desc_pool), "Creating Descriptor Pool");
+}
+
+void vk_create_entity_descriptor_sets(struct render_state *ren, struct entity *e)
+{
+	struct mesh_renderer *mr = &e->mesh_renderer;
+	u32 num_sets = FIF;
+	VkDescriptorSetLayout *layouts = malloc(sizeof(*layouts) * num_sets);
+	mr->sets = malloc(sizeof(*ren->set_test) * num_sets);
+
+	for (u32 i = 0; i < num_sets; i++) {
+		layouts[i] = ren->set_layout_entity;
+	}
+
+	VkDescriptorSetAllocateInfo ai = {
+		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+		.descriptorPool = ren->desc_pool,
+		.descriptorSetCount = num_sets,
+		.pSetLayouts = layouts,
+	};
+
+	vk_chk(vkAllocateDescriptorSets(ren->device, &ai, mr->sets), "Allocating Descriptor Sets");
+
+	for (u32 i = 0; i < FIF; i++) {
+		VkDescriptorBufferInfo binfo = {
+			.buffer = mr->buffs[i].buf,
+			.offset = 0,
+			.range = sizeof(struct entity_uniforms),
+		};
+		VkWriteDescriptorSet writes[1] = { 0 };
+
+		writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		writes[0].dstSet = mr->sets[i];
+		writes[0].dstBinding = 0;
+		writes[0].dstArrayElement = 0;
+		writes[0].descriptorCount = 1;
+		writes[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+		writes[0].pBufferInfo = &binfo;
+
+		vkUpdateDescriptorSets(ren->device, 1, writes, 0, NULL);
+	}
+
+	free(layouts);
 }
 
 void vk_create_descriptor_sets(struct render_state *ren)
@@ -1016,6 +1105,10 @@ void vk_create_descriptor_sets(struct render_state *ren)
 	vkUpdateDescriptorSets(ren->device, 2, write_image, 0, NULL);
 }
 
+void entity_create_descriptor_sets(struct entity *e)
+{
+}
+
 void vk_create_sampler(struct render_state *ren)
 {
 	VkSamplerCreateInfo sci = {
@@ -1033,7 +1126,7 @@ void vk_create_sampler(struct render_state *ren)
 
 void vk_create_descriptor_set_layout(struct render_state *ren)
 {
-	VkDescriptorSetLayoutBinding bindings[3] = { 0 };
+	VkDescriptorSetLayoutBinding bindings[4] = { 0 };
 
 	bindings[0].binding = 0;
 	bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
@@ -1049,6 +1142,11 @@ void vk_create_descriptor_set_layout(struct render_state *ren)
 	bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
 	bindings[2].descriptorCount = 1;
 	bindings[2].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+	bindings[3].binding = 0;
+	bindings[3].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+	bindings[3].descriptorCount = 1;
+	bindings[3].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
 
 	VkDescriptorSetLayoutCreateInfo dci = {
 		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
@@ -1067,6 +1165,15 @@ void vk_create_descriptor_set_layout(struct render_state *ren)
 
 	vk_chk(vkCreateDescriptorSetLayout(ren->device, &dci2, NULL, &ren->set_layout_tex),
 	       "Creating Descriptor Layout");
+
+	VkDescriptorSetLayoutCreateInfo dci3 = {
+		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+		.bindingCount = 1,
+		.pBindings = &bindings[3],
+	};
+
+	vk_chk(vkCreateDescriptorSetLayout(ren->device, &dci3, NULL, &ren->set_layout_entity),
+	       "Creating Descriptor Layout");
 }
 
 void vk_create_pipeline(struct render_state *ren)
@@ -1076,14 +1183,15 @@ void vk_create_pipeline(struct render_state *ren)
 		.size = sizeof(struct push_constants),
 	};
 
-	VkDescriptorSetLayout layouts[2] = {
+	VkDescriptorSetLayout layouts[3] = {
 		ren->set_layout_buf,
 		ren->set_layout_tex,
+		ren->set_layout_entity,
 	};
 
 	VkPipelineLayoutCreateInfo pipelineLayoutCI = {
 		.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-		.setLayoutCount = 2,
+		.setLayoutCount = 3,
 		.pSetLayouts = layouts,
 		.pushConstantRangeCount = 1,
 		.pPushConstantRanges = &pushConstantRange,
@@ -1283,7 +1391,7 @@ vec2s vec2_lerp(vec2s a, vec2s b, float t)
 	return (vec2s){ { lerp(a.x, b.x, t), lerp(a.y, b.y, t) } };
 }
 
-void vk_update_uniforms(struct render_state *ren)
+void update_uniforms(struct render_state *ren)
 {
 	vec2s mouse_pos;
 	SDL_GetMouseState(&mouse_pos.x, &mouse_pos.y);
@@ -1301,42 +1409,43 @@ void vk_update_uniforms(struct render_state *ren)
 
 	ren->uniforms.view = glms_lookat(eye, center, up);
 
-	ren->rot += ren->delta_time * 20.0f;
-
-	vec3s rads = { glm_rad(ren->sponza_transform.rot.x), glm_rad(ren->sponza_transform.rot.y),
-		       glm_rad(ren->sponza_transform.rot.z) };
-	versors rot = glms_euler_zyx_quat(rads);
-
-	mat4s T = glms_translate(GLMS_MAT4_IDENTITY, ren->sponza_transform.pos);
-	mat4s R = glms_quat_mat4(rot);
-	mat4s S = glms_scale(GLMS_MAT4_IDENTITY, ren->sponza_transform.scale);
-
-	ren->uniforms.model = glms_mat4_mul(T, glms_mat4_mul(R, S));
+	// vec3s rads = { {
+	// 	glm_rad(ren->ent.rot.x),
+	// 	glm_rad(ren->sponza_transform.rot.y),
+	// 	glm_rad(ren->sponza_transform.rot.z),
+	// } };
+	//
+	// versors rot = glms_euler_zyx_quat(rads);
+	//
+	// mat4s T = glms_translate(GLMS_MAT4_IDENTITY, ren->sponza_transform.pos);
+	// mat4s R = glms_quat_mat4(rot);
+	// mat4s S = glms_scale(GLMS_MAT4_IDENTITY, ren->sponza_transform.scale);
+	//
+	// ren->uniforms.model = glms_mat4_mul(T, glms_mat4_mul(R, S));
 }
 
 void vk_draw_frame(struct render_state *ren, struct window *win)
 {
 	u32 frame = ren->frame_index;
-	vk_chk(vkWaitForFences(ren->device, 1, &ren->fences[frame], true, UINT64_MAX), "Waiting for fences");
-	vk_chk(vkResetFences(ren->device, 1, &ren->fences[frame]), "reseting fences");
+	vk_chk(vkWaitForFences(ren->device, 1, &ren->fences[frame], true, UINT64_MAX), NULL);
+	vk_chk(vkResetFences(ren->device, 1, &ren->fences[frame]), NULL);
 	vkAcquireNextImageKHR(ren->device, ren->swapchain, UINT64_MAX, ren->img_sems[frame], VK_NULL_HANDLE,
 			      &ren->image_index);
 
 	//help me
-	vk_update_uniforms(ren);
 
 	// ren->test_uniforms.add= ren->ubuf[frame].addr;
 
 	memcpy(ren->ubuf[frame].info.pMappedData, &ren->uniforms, sizeof(struct uniform_data));
 
 	VkCommandBuffer cmd = ren->cmds[frame];
-	vk_chk(vkResetCommandBuffer(cmd, 0), "resetting cmd buffer");
+	vk_chk(vkResetCommandBuffer(cmd, 0), NULL);
 	VkCommandBufferBeginInfo cbi = {
 		.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
 		.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
 	};
 
-	vk_chk(vkBeginCommandBuffer(cmd, &cbi), "Begin cmd buffer");
+	vk_chk(vkBeginCommandBuffer(cmd, &cbi), NULL);
 
 	VkImageMemoryBarrier2 outputBarriers[2] = {
 		(VkImageMemoryBarrier2){
@@ -1429,37 +1538,70 @@ void vk_draw_frame(struct render_state *ren, struct window *win)
 		.tex_ind = 0,
 	};
 
-	vkCmdBindVertexBuffers(cmd, 0, 1, &ren->sponza_mesh.buff, &ren->sponza_mesh.vertex_offset);
-	vkCmdBindIndexBuffer(cmd, ren->sponza_mesh.buff, ren->sponza_mesh.ind_offset, VK_INDEX_TYPE_UINT32);
+	// vkCmdBindVertexBuffers(cmd, 0, 1, &ren->sponza_mesh.buff, &ren->sponza_mesh.vertex_offset);
+	// vkCmdBindIndexBuffer(cmd, ren->sponza_mesh.buff, ren->sponza_mesh.ind_offset, VK_INDEX_TYPE_UINT32);
 	// vkCmdPushConstants(cmd, ren->pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
 	// 		   sizeof(pc), &pc);
 
-	for (u32 i = 0; i < ren->sponza_mesh.sub_mesh_count; i++) {
-		struct submesh *sm = &ren->sponza_mesh.sub_meshes[i];
+	for (u32 i = 0; i < ren->entity_count; i++) {
+		struct entity *e = &ren->entities[i];
+		if (!(e->flags & MESH_RENDERER))
+			continue;
 
-		VkDescriptorSet sets[2] = {
-			ren->set_test[frame],
-			ren->set_tex,
-		};
+		// printf("Drawing entity!!!\n");
+		struct mesh_renderer *mr = &e->mesh_renderer;
+		struct mesh *m = e->mesh_renderer.mesh;
 
-		pc.tex_ind = sm->tex_index;
+		vec3s rads = { {
+			glm_rad(e->transform.rot.x),
+			glm_rad(e->transform.rot.y),
+			glm_rad(e->transform.rot.z),
+		} };
 
-		vkCmdPushConstants(cmd, ren->pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-				   0, sizeof(pc), &pc);
-		// ren->test_uniforms.tex_index = sm->tex_index;
-		// memcpy(ren->test_uniform_buf[frame].info.pMappedData, &ren->test_uniforms, sizeof(struct uniform_test));
+		versors rot = glms_euler_zyx_quat(rads);
 
-		vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, ren->pipeline_layout, 0, 2, sets, 0,
-					NULL);
-		// vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, ren->pipeline_layout, 1, 1, &ren->set_tex, 0,
-		// 			NULL);
-		// vkCmdDrawIndexed(cmd, sizeof(indices) / sizeof(indices[0]), 1, 0, 0, 0);
-		//
+		mat4s T = glms_translate(GLMS_MAT4_IDENTITY, e->transform.pos);
+		mat4s R = glms_quat_mat4(rot);
+		mat4s S = glms_scale(GLMS_MAT4_IDENTITY, e->transform.scale);
 
-		// vkCmdDrawIndexed(cmd, ren->sponza_index_count, 1, 0, 0, 0);
-		vkCmdDrawIndexed(cmd, sm->index_count, 1, sm->index_offset, 0, 0);
+		e->mesh_renderer.uniforms.model = glms_mat4_mul(T, glms_mat4_mul(R, S));
+
+		memcpy(mr->buffs[frame].info.pMappedData, &mr->uniforms, sizeof(struct entity_uniforms));
+
+		// vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, ren->pipeline_layout, 0, 1,
+		// 			&mr->sets[frame], 0, NULL);
+
+		vkCmdBindVertexBuffers(cmd, 0, 1, &m->buff, &m->vertex_offset);
+		vkCmdBindIndexBuffer(cmd, m->buff, m->ind_offset, VK_INDEX_TYPE_UINT32);
+
+		for (u32 k = 0; k < m->submesh_count; k++) {
+			struct submesh *sm = &m->submeshes[k];
+
+			VkDescriptorSet sets[3] = {
+				ren->set_test[frame],
+				ren->set_tex,
+				mr->sets[frame],
+			};
+
+			pc.tex_ind = sm->tex_index;
+
+			vkCmdPushConstants(cmd, ren->pipeline_layout,
+					   VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc),
+					   &pc);
+			// ren->test_uniforms.tex_index = sm->tex_index;
+			// memcpy(ren->test_uniform_buf[frame].info.pMappedData, &ren->test_uniforms, sizeof(struct uniform_test));
+
+			vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, ren->pipeline_layout, 0, 3, sets,
+						0, NULL);
+			// vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, ren->pipeline_layout, 1, 1, &ren->set_tex, 0,
+			// 			NULL);
+			// vkCmdDrawIndexed(cmd, sizeof(indices) / sizeof(indices[0]), 1, 0, 0, 0);
+			//
+
+			// vkCmdDrawIndexed(cmd, ren->sponza_index_count, 1, 0, 0, 0);
+			vkCmdDrawIndexed(cmd, sm->index_count, 1, sm->index_offset, 0, 0);
+		}
 	}
-
 	cImGui_ImplVulkan_RenderDrawData(ren->imgui_draw_data, cmd);
 	vkCmdEndRendering(cmd);
 
@@ -1497,7 +1639,7 @@ void vk_draw_frame(struct render_state *ren, struct window *win)
 		.pSignalSemaphores = &ren->ren_sems[ren->image_index],
 	};
 
-	vk_chk(vkQueueSubmit(ren->gfx_q, 1, &submitInfo, ren->fences[frame]), "submitting queue");
+	vk_chk(vkQueueSubmit(ren->gfx_q, 1, &submitInfo, ren->fences[frame]), NULL);
 
 	// frameIndex = (frameIndex + 1) % maxFramesInFlight;
 	ren->frame_index = (ren->frame_index + 1) % FIF;
@@ -1528,19 +1670,71 @@ void poll_events(struct window *win)
 	}
 }
 
+void entity_set_flag(struct entity *e, enum entity_flags flags)
+{
+	e->flags |= flags;
+}
+
+void entity_unset_flag(struct entity *e, enum entity_flags flags)
+{
+	e->flags &= ~flags;
+}
+
+struct entity *get_new_entity(struct render_state *ren)
+{
+	struct entity *e = &ren->entities[ren->entity_count];
+	ren->entity_count += 1;
+	*e = (struct entity){ 0 };
+	e->transform.scale = (vec3s){ 1.0f, 1.0f, 1.0f };
+	return e;
+}
+
+void entity_add_mesh_renderer(struct render_state *ren, struct entity *e, struct mesh *m)
+{
+	entity_set_flag(e, MESH_RENDERER);
+	e->mesh_renderer.mesh = m;
+	e->mesh_renderer.material_index = 0;
+
+	vk_create_entity_uniform_buffer(ren, e);
+	vk_create_entity_descriptor_sets(ren, e);
+}
+
+void entity_add_camera(struct entity *e)
+{
+	entity_set_flag(e, CAMERA);
+	e->camera.fov = glm_rad(78.0f);
+	e->camera.is_perspective = true;
+}
+
+void scene_init(struct render_state *ren)
+{
+	struct entity *e = get_new_entity(ren);
+	entity_add_mesh_renderer(ren, e, &ren->meshes[0]);
+
+	e = get_new_entity(ren);
+	entity_add_mesh_renderer(ren, e, &ren->meshes[0]);
+	// e->transform.scale = (vec3s){ 0.01f, 0.01f, 0.01f };
+
+	// e = get_new_entity(ren);
+	// entity_add_camera(e);
+}
+
 int main()
 {
 	struct render_state ren = { 0 };
 	struct window win = { 0 };
 
 	ren.textures = malloc(sizeof(*ren.textures) * 1000);
+	ren.meshes = malloc(sizeof(*ren.meshes) * 40000);
+	ren.entities = malloc(sizeof(*ren.entities) * 40000);
 
 	sdl_chk(SDL_Init(SDL_INIT_VIDEO), "Initializing");
 	vk_init(&ren, &win);
 	imgui_init(&ren, &win);
+	scene_init(&ren);
 
-	ren.sponza_transform.scale = (vec3s){ 0.01f, 0.01f, 0.01f };
-	ren.sponza_transform.rot.y = 90.0f;
+	// ren.sponza_transform.scale = (vec3s){ 0.01f, 0.01f, 0.01f };
+	// ren.sponza_transform.rot.y = 90.0f;
 	win.should_close = false;
 
 	ren.last_time = SDL_GetTicks() / 1000.0f;
@@ -1551,6 +1745,7 @@ int main()
 		ren.last_time = time;
 		poll_events(&win);
 		draw_imgui(&ren);
+		update_uniforms(&ren);
 		vk_draw_frame(&ren, &win);
 	}
 

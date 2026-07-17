@@ -39,7 +39,7 @@ void imgui_init(struct render_state *ren, struct window *win)
 
 	if (!cImGui_ImplVulkan_Init(&initInfo)) {
 		printf("ImGui failed to init vulkan!\n");
-		exit(0);
+		// exit(0);
 	} else {
 		printf("ImGui init vulkan SUCCESS!!\n");
 	}
@@ -48,9 +48,13 @@ void imgui_init(struct render_state *ren, struct window *win)
 void draw_debug(struct render_state *ren)
 {
 	ImGui_Begin("Debug", NULL, 0);
-	ImGui_DragFloat3Ex("pos", &ren->sponza_transform.pos.x, 0.01f, 0, 0, NULL, 0);
-	ImGui_DragFloat3Ex("rot", &ren->sponza_transform.rot.x, 0.01f, 0, 0, NULL, 0);
-	ImGui_DragFloat3Ex("scale", &ren->sponza_transform.scale.x, 0.01f, 0, 0, NULL, 0);
+	ImGui_DragFloat3Ex("pos", &ren->entities[0].transform.pos.x, 0.01f, 0, 0, NULL, 0);
+	ImGui_DragFloat3Ex("rot", &ren->entities[0].transform.rot.x, 0.01f, 0, 0, NULL, 0);
+	ImGui_DragFloat3Ex("scale", &ren->entities[0].transform.scale.x, 0.01f, 0, 0, NULL, 0);
+
+	ImGui_DragFloat3Ex("pos2", &ren->entities[1].transform.pos.x, 0.01f, 0, 0, NULL, 0);
+	ImGui_DragFloat3Ex("rot2", &ren->entities[1].transform.rot.x, 0.01f, 0, 0, NULL, 0);
+	ImGui_DragFloat3Ex("scale2", &ren->entities[1].transform.scale.x, 0.01f, 0, 0, NULL, 0);
 	ImGui_End();
 }
 
@@ -68,58 +72,3 @@ void draw_imgui(struct render_state *ren)
 	ren->imgui_draw_data = ImGui_GetDrawData();
 	// ImGui_EndFrame();
 }
-
-// void initImGui()
-// {
-// 	IMGUI_CHECKVERSION();
-// 	ImGui::CreateContext();
-// 	ImGuiIO &io = ImGui::GetIO();
-// 	(void)io;
-// 	io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
-// 	ImGui_ImplSDL3_InitForVulkan(window);
-// 	ImGui_ImplVulkan_InitInfo initInfo = {};
-// 	vk::Format depthFormat = findDepthFormat();
-//
-// 	initInfo.Instance = *instance;
-// 	initInfo.PhysicalDevice = *physicalDevice;
-// 	initInfo.Device = *device;
-// 	initInfo.QueueFamily = queueIndex;
-// 	initInfo.Queue = *graphicsQueue;
-// 	initInfo.DescriptorPoolSize = 10;
-// 	initInfo.UseDynamicRendering = true;
-// 	initInfo.PipelineInfoMain.MSAASamples = static_cast<VkSampleCountFlagBits>(msaaSamples);
-// 	initInfo.PipelineInfoMain.PipelineRenderingCreateInfo =
-// 		vk::PipelineRenderingCreateInfo{ .colorAttachmentCount = 1,
-// 						 .pColorAttachmentFormats = &swapchainSurfaceFormat.format,
-// 						 .depthAttachmentFormat = depthFormat };
-//
-// 	initInfo.MinImageCount = 3;
-// 	initInfo.ImageCount = 3;
-// 	ImGui_ImplVulkan_Init(&initInfo);
-// 	debugSettings.color = { 1.0f, 1.0f, 1.0f, 1.0f };
-// }
-
-// void draw_imgui()
-// {
-// 	bool showDemo = true;
-//
-// 	ImGui_ImplVulkan_NewFrame();
-// 	ImGui_ImplSDL3_NewFrame();
-// 	ImGui::NewFrame();
-// 	ImGui::DockSpaceOverViewport(0, ImGui::GetMainViewport(), ImGuiDockNodeFlags_PassthruCentralNode, NULL);
-//
-// 	ImGui::ShowDemoWindow(&showDemo);
-// 	updateEditor();
-//
-// 	ImGui::Render();
-// 	draw_data = ImGui::GetDrawData();
-// }
-//
-// void cleanupImgui()
-// {
-// 	ImGui_ImplVulkan_Shutdown();
-// 	ImGui_ImplSDL3_Shutdown();
-// 	ImGui::DestroyContext();
-// }
-//
-// ImGui_ImplVulkan_RenderDrawData(draw_data, *commandBuffers[frameIndex]);

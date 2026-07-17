@@ -12,9 +12,9 @@ find_package(Vulkan REQUIRED)
 add_executable(dummy src/main.c)
 
 target_compile_options(dummy PRIVATE
-    -Wall
-    -Wextra
-    -pedantic
+    # -Wall
+    # -Wextra
+    # -pedantic
 )
 
 target_link_libraries(dummy PRIVATE Vulkan::Vulkan)
