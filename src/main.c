@@ -1,12 +1,12 @@
 #include "assert.h"
 
-#include "SDL3/SDL_vulkan.h"
-#include "SDL3/SDL_init.h"
-#include "SDL3/SDL_timer.h"
-
 #define VOLK_IMPLEMENTATION
 #define VK_NO_PROTOTYPES
 #include "volk.h"
+
+#include "SDL3/SDL_vulkan.h"
+#include "SDL3/SDL_init.h"
+#include "SDL3/SDL_timer.h"
 
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
@@ -14,12 +14,12 @@
 #define CGLTF_IMPLEMENTATION
 #include "cgltf.h"
 
-#include "cglm/struct.h"
-
 #include "log.h"
 #include "types.h"
+#include "cglm/struct.h"
 
 #include "editor.c"
+#include "transform.c"
 
 bool const engine_validation_layers_enabled = true;
 u32 const FIF = 2;
@@ -294,9 +294,9 @@ void sdl_create_window(struct render_state *ren, struct window *win)
 	win->h = 600;
 	// SDL_WindowFlags flags = SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE;
 	SDL_WindowFlags flags = SDL_WINDOW_VULKAN;
-	sdl_chk(win->p_win = SDL_CreateWindow("Vulkan Engine", win->w, win->h, flags), "Creating Window");
-	sdl_chk(SDL_Vulkan_CreateSurface(win->p_win, ren->instance, NULL, &win->surf), "Creating Vulkan Surface");
-	sdl_chk(SDL_GetWindowSize(win->p_win, (int *)&win->w, (int *)&win->h), "Getting Window Size");
+	sdl_chk(win->sdl_win = SDL_CreateWindow("Vulkan Engine", win->w, win->h, flags), "Creating Window");
+	sdl_chk(SDL_Vulkan_CreateSurface(win->sdl_win, ren->instance, NULL, &win->surf), "Creating Vulkan Surface");
+	sdl_chk(SDL_GetWindowSize(win->sdl_win, (int *)&win->w, (int *)&win->h), "Getting Window Size");
 }
 
 void vk_create_swapchain(struct render_state *ren, struct window *win)
@@ -448,7 +448,7 @@ void vk_create_depth_buffer(struct render_state *ren, struct window *win)
 
 void vk_create_uniform_buffers(struct render_state *ren)
 {
-	ren->ubuf = malloc(sizeof(*ren->ubuf) * FIF);
+	ren->camera_uniform_buffer = malloc(sizeof(*ren->camera_uniform_buffer) * FIF);
 
 	for (u32 i = 0; i < FIF; i++) {
 		VkBufferCreateInfo bci = {
@@ -469,48 +469,18 @@ void vk_create_uniform_buffers(struct render_state *ren)
 			.usage = VMA_MEMORY_USAGE_AUTO,
 		};
 
-		vk_chk(vmaCreateBuffer(ren->allocator, &bci, &aci, &ren->ubuf[i].buf, &ren->ubuf[i].alloc,
-				       &ren->ubuf[i].info),
+		vk_chk(vmaCreateBuffer(ren->allocator, &bci, &aci, &ren->camera_uniform_buffer[i].buf,
+				       &ren->camera_uniform_buffer[i].alloc, &ren->camera_uniform_buffer[i].info),
 		       "Allocating Uniform Buffer");
-		vmaSetAllocationName(ren->allocator, ren->ubuf[i].alloc, "Uniform Buffer");
+		vmaSetAllocationName(ren->allocator, ren->camera_uniform_buffer[i].alloc, "Uniform Buffer");
 
 		VkBufferDeviceAddressInfo dai = {
 			.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,
 			.pNext = NULL,
-			.buffer = ren->ubuf[i].buf,
+			.buffer = ren->camera_uniform_buffer[i].buf,
 		};
 
-		ren->ubuf[i].addr = vkGetBufferDeviceAddress(ren->device, &dai);
-	}
-
-	//TODO: need a generic create buffer function eventually
-	ren->test_uniform_buf = malloc(sizeof(*ren->test_uniform_buf) * FIF);
-
-	for (u32 i = 0; i < FIF; i++) {
-		VkBufferCreateInfo bci = {
-			.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-			.pNext = NULL,
-			.flags = 0,
-			.size = sizeof(struct uniform_test),
-			.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-			.sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-			.queueFamilyIndexCount = 0,
-			.pQueueFamilyIndices = NULL,
-		};
-
-		VmaAllocationCreateInfo aci = {
-			.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
-				 VMA_ALLOCATION_CREATE_HOST_ACCESS_ALLOW_TRANSFER_INSTEAD_BIT |
-				 VMA_ALLOCATION_CREATE_MAPPED_BIT,
-			.usage = VMA_MEMORY_USAGE_AUTO,
-		};
-
-		vk_chk(vmaCreateBuffer(ren->allocator, &bci, &aci, &ren->test_uniform_buf[i].buf,
-				       &ren->test_uniform_buf[i].alloc, &ren->test_uniform_buf[i].info),
-		       "Allocating Test Uniform Buffer");
-		vmaSetAllocationName(ren->allocator, ren->test_uniform_buf[i].alloc, "Test Uniform Buffer");
-
-		ren->test_uniform_buf[i].addr = 0;
+		ren->camera_uniform_buffer[i].addr = vkGetBufferDeviceAddress(ren->device, &dai);
 	}
 }
 
@@ -550,8 +520,8 @@ void vk_create_entity_uniform_buffer(struct render_state *ren, struct entity *e)
 void vk_create_sync_objects(struct render_state *ren)
 {
 	ren->fences = malloc(sizeof(*ren->fences) * FIF);
-	ren->img_sems = malloc(sizeof(*ren->img_sems) * FIF);
-	ren->ren_sems = malloc(sizeof(*ren->ren_sems) * ren->swap_count);
+	ren->sem_img = malloc(sizeof(*ren->sem_img) * FIF);
+	ren->sem_ren = malloc(sizeof(*ren->sem_ren) * ren->swap_count);
 
 	VkSemaphoreCreateInfo sci = {
 		.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
@@ -567,12 +537,12 @@ void vk_create_sync_objects(struct render_state *ren)
 
 	for (u32 i = 0; i < FIF; i++) {
 		vk_chk(vkCreateFence(ren->device, &fci, NULL, &ren->fences[i]), "Creating Fence");
-		vk_chk(vkCreateSemaphore(ren->device, &sci, NULL, &ren->img_sems[i]),
+		vk_chk(vkCreateSemaphore(ren->device, &sci, NULL, &ren->sem_img[i]),
 		       "Creating Image Acquired Semaphore");
 	}
 
 	for (u32 i = 0; i < ren->swap_count; i++) {
-		vk_chk(vkCreateSemaphore(ren->device, &sci, NULL, &ren->ren_sems[i]),
+		vk_chk(vkCreateSemaphore(ren->device, &sci, NULL, &ren->sem_ren[i]),
 		       "Creating Render Complete Semaphore");
 	}
 }
@@ -751,7 +721,7 @@ void vk_load_texture(struct render_state *ren, char *file)
 	ren->texture_count += 1;
 }
 
-void get_dir_path(char *name, const char *path)
+void get_dir_path(char *out, const char *path)
 {
 	char const *slash = strrchr(path, '/');
 	char const *back_slash = strrchr(path, '\\');
@@ -764,9 +734,8 @@ void get_dir_path(char *name, const char *path)
 		len = slash - path;
 	}
 
-	snprintf(name, len + 2, "%s", path);
-
-	printf("dir: %s\n", name);
+	snprintf(out, len + 2, "%s", path);
+	printf("Dir: %s\n", out);
 }
 
 struct mesh *get_new_mesh(struct render_state *ren)
@@ -841,6 +810,7 @@ struct mesh *vk_load_model(struct render_state *ren, char *path)
 				for (size_t k = 0; k < vert_acc->count; k++) {
 					struct vertex *v = &verts[vert_offset + k];
 					cgltf_accessor_read_float(vert_acc, k, v->pos.raw, 3);
+					v->pos.y *= -1.0f;
 				}
 
 				for (size_t k = 0; k < norm_acc->count; k++) {
@@ -930,9 +900,9 @@ void vk_create_quad(struct render_state *ren)
 
 	VmaAllocationInfo info;
 
-	vk_chk(vmaCreateBuffer(ren->allocator, &bci, &aci, &ren->vert_buff, &ren->vert_alloc, &info),
+	vk_chk(vmaCreateBuffer(ren->allocator, &bci, &aci, &ren->quad_mesh.buff, &ren->quad_mesh.alloc, &info),
 	       "Allocating Vertex Buffer");
-	vmaSetAllocationName(ren->allocator, ren->vert_alloc, "Vertex Buffer");
+	vmaSetAllocationName(ren->allocator, ren->quad_mesh.alloc, "Quad Vertex Buffer");
 
 	memcpy(info.pMappedData, quad_verts, v_size);
 	memcpy(((char *)info.pMappedData) + v_size, quad_indices, i_size);
@@ -980,7 +950,7 @@ void vk_create_entity_descriptor_sets(struct render_state *ren, struct entity *e
 	struct mesh_renderer *mr = &e->mesh_renderer;
 	u32 num_sets = FIF;
 	VkDescriptorSetLayout *layouts = malloc(sizeof(*layouts) * num_sets);
-	mr->sets = malloc(sizeof(*ren->set_test) * num_sets);
+	mr->sets = malloc(sizeof(*mr->sets) * num_sets);
 
 	for (u32 i = 0; i < num_sets; i++) {
 		layouts[i] = ren->set_layout_entity;
@@ -1020,42 +990,6 @@ void vk_create_entity_descriptor_sets(struct render_state *ren, struct entity *e
 void vk_create_descriptor_sets(struct render_state *ren)
 {
 	u32 num_sets = FIF;
-	VkDescriptorSetLayout *layouts = malloc(sizeof(*layouts) * num_sets);
-	ren->set_test = malloc(sizeof(*ren->set_test) * num_sets);
-
-	for (u32 i = 0; i < num_sets; i++) {
-		layouts[i] = ren->set_layout_buf;
-	}
-
-	VkDescriptorSetAllocateInfo ai = {
-		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-		.descriptorPool = ren->desc_pool,
-		.descriptorSetCount = num_sets,
-		.pSetLayouts = layouts,
-	};
-
-	vk_chk(vkAllocateDescriptorSets(ren->device, &ai, ren->set_test), "Allocating Descriptor Sets");
-
-	for (u32 i = 0; i < FIF; i++) {
-		VkDescriptorBufferInfo binfo = {
-			.buffer = ren->test_uniform_buf[i].buf,
-			.offset = 0,
-			.range = sizeof(struct uniform_test),
-		};
-		VkWriteDescriptorSet writes[1] = { 0 };
-
-		writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-		writes[0].dstSet = ren->set_test[i];
-		writes[0].dstBinding = 0;
-		writes[0].dstArrayElement = 0;
-		writes[0].descriptorCount = 1;
-		writes[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-		writes[0].pBufferInfo = &binfo;
-
-		vkUpdateDescriptorSets(ren->device, 1, writes, 0, NULL);
-	}
-
-	free(layouts);
 
 	VkDescriptorSetAllocateInfo ai_tex = {
 		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
@@ -1066,20 +1000,14 @@ void vk_create_descriptor_sets(struct render_state *ren)
 
 	vk_chk(vkAllocateDescriptorSets(ren->device, &ai_tex, &ren->set_tex), "Allocating Descriptor Sets");
 
-	// VkDescriptorImageInfo iinfo = {
-	// 	.imageView = ren->tex_image.view,
-	// 	.imageLayout = VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL,
-	// };
-
 	VkDescriptorImageInfo image_infos[512] = { 0 };
 
-	printf("Num textures: %u\n", ren->texture_count);
 	for (u32 i = 0; i < ren->texture_count; i++) {
 		image_infos[i].imageView = ren->textures[i].view;
 		image_infos[i].imageLayout = VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL;
 	}
 
-	VkDescriptorImageInfo iinfo2 = {
+	VkDescriptorImageInfo sampler_info = {
 		.sampler = ren->sampler,
 	};
 
@@ -1098,15 +1026,11 @@ void vk_create_descriptor_sets(struct render_state *ren)
 			.dstBinding = 1,
 			.descriptorCount = 1,
 			.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER,
-			.pImageInfo = &iinfo2,
+			.pImageInfo = &sampler_info,
 		},
 	};
 
 	vkUpdateDescriptorSets(ren->device, 2, write_image, 0, NULL);
-}
-
-void entity_create_descriptor_sets(struct entity *e)
-{
 }
 
 void vk_create_sampler(struct render_state *ren)
@@ -1124,55 +1048,44 @@ void vk_create_sampler(struct render_state *ren)
 	vk_chk(vkCreateSampler(ren->device, &sci, NULL, &ren->sampler), "Creating Sampler");
 }
 
-void vk_create_descriptor_set_layout(struct render_state *ren)
+void vk_create_set_layouts(struct render_state *ren)
 {
-	VkDescriptorSetLayoutBinding bindings[4] = { 0 };
+	VkDescriptorSetLayoutBinding bindings[3] = { 0 };
 
 	bindings[0].binding = 0;
-	bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-	bindings[0].descriptorCount = 1;
+	bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+	bindings[0].descriptorCount = ren->texture_count;
 	bindings[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-	bindings[1].binding = 0;
-	bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-	bindings[1].descriptorCount = ren->texture_count;
+	bindings[1].binding = 1;
+	bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+	bindings[1].descriptorCount = 1;
 	bindings[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-	bindings[2].binding = 1;
-	bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+	bindings[2].binding = 0;
+	bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 	bindings[2].descriptorCount = 1;
-	bindings[2].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-
-	bindings[3].binding = 0;
-	bindings[3].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-	bindings[3].descriptorCount = 1;
-	bindings[3].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+	bindings[2].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
 
 	VkDescriptorSetLayoutCreateInfo dci = {
 		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-		.bindingCount = 1,
-		.pBindings = bindings,
-	};
-
-	vk_chk(vkCreateDescriptorSetLayout(ren->device, &dci, NULL, &ren->set_layout_buf),
-	       "Creating Descriptor Layout");
-
-	VkDescriptorSetLayoutCreateInfo dci2 = {
-		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
 		.bindingCount = 2,
-		.pBindings = &bindings[1],
+		.pBindings = &bindings[0],
 	};
 
-	vk_chk(vkCreateDescriptorSetLayout(ren->device, &dci2, NULL, &ren->set_layout_tex),
+	vk_chk(vkCreateDescriptorSetLayout(ren->device, &dci, NULL, &ren->set_layout_tex),
 	       "Creating Descriptor Layout");
 
-	VkDescriptorSetLayoutCreateInfo dci3 = {
-		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-		.bindingCount = 1,
-		.pBindings = &bindings[3],
-	};
+	dci.bindingCount = 1;
+	dci.pBindings = &bindings[2];
 
-	vk_chk(vkCreateDescriptorSetLayout(ren->device, &dci3, NULL, &ren->set_layout_entity),
+	// dci = {
+	// 	.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+	// 	.bindingCount = 1,
+	// 	.pBindings = &bindings[3],
+	// };
+
+	vk_chk(vkCreateDescriptorSetLayout(ren->device, &dci, NULL, &ren->set_layout_entity),
 	       "Creating Descriptor Layout");
 }
 
@@ -1183,15 +1096,14 @@ void vk_create_pipeline(struct render_state *ren)
 		.size = sizeof(struct push_constants),
 	};
 
-	VkDescriptorSetLayout layouts[3] = {
-		ren->set_layout_buf,
+	VkDescriptorSetLayout layouts[2] = {
 		ren->set_layout_tex,
 		ren->set_layout_entity,
 	};
 
 	VkPipelineLayoutCreateInfo pipelineLayoutCI = {
 		.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-		.setLayoutCount = 3,
+		.setLayoutCount = 2,
 		.pSetLayouts = layouts,
 		.pushConstantRangeCount = 1,
 		.pPushConstantRanges = &pushConstantRange,
@@ -1333,7 +1245,7 @@ void vk_init(struct render_state *ren, struct window *win)
 	vk_load_shaders(ren);
 	vk_load_model(ren, "../../res/models/sponza/Sponza.gltf");
 	vk_create_descriptor_pool(ren);
-	vk_create_descriptor_set_layout(ren);
+	vk_create_set_layouts(ren);
 	vk_create_descriptor_sets(ren);
 	vk_create_pipeline(ren);
 }
@@ -1344,26 +1256,23 @@ void vk_cleanup(struct render_state *ren, struct window *win)
 
 	for (u32 i = 0; i < FIF; i++) {
 		vkDestroyFence(ren->device, ren->fences[i], NULL);
-		vkDestroySemaphore(ren->device, ren->img_sems[i], NULL);
-		vmaDestroyBuffer(ren->allocator, ren->ubuf[i].buf, ren->ubuf[i].alloc);
-		vmaDestroyBuffer(ren->allocator, ren->test_uniform_buf[i].buf, ren->test_uniform_buf[i].alloc);
+		vkDestroySemaphore(ren->device, ren->sem_img[i], NULL);
+		vmaDestroyBuffer(ren->allocator, ren->camera_uniform_buffer[i].buf,
+				 ren->camera_uniform_buffer[i].alloc);
 	}
 
 	vmaDestroyImage(ren->allocator, ren->depth_image.image, ren->depth_image.alloc);
 	vkDestroyImageView(ren->device, ren->depth_image.view, NULL);
 
 	for (u32 i = 0; i < ren->swap_count; i++) {
-		vkDestroySemaphore(ren->device, ren->ren_sems[i], NULL);
+		vkDestroySemaphore(ren->device, ren->sem_ren[i], NULL);
 		vkDestroyImageView(ren->device, ren->swap_images[i].view, NULL);
 	}
 
-	vmaDestroyBuffer(ren->allocator, ren->vert_buff, ren->vert_alloc);
+	vmaDestroyBuffer(ren->allocator, ren->quad_mesh.buff, ren->quad_mesh.alloc);
 
-	// vkDestroyImageView(ren->device, ren->tex_image.view, NULL);
 	vkDestroySampler(ren->device, ren->sampler, NULL);
-	// vmaDestroyImage(ren->allocator, ren->tex_image.image, ren->tex_image.alloc);
 
-	vkDestroyDescriptorSetLayout(ren->device, ren->set_layout_buf, NULL);
 	vkDestroyDescriptorSetLayout(ren->device, ren->set_layout_tex, NULL);
 	vkDestroyDescriptorPool(ren->device, ren->desc_pool, NULL);
 	vkDestroyPipelineLayout(ren->device, ren->pipeline_layout, NULL);
@@ -1373,7 +1282,7 @@ void vk_cleanup(struct render_state *ren, struct window *win)
 	vkDestroyCommandPool(ren->device, ren->cmd_pool, NULL);
 	vkDestroyShaderModule(ren->device, ren->shader, NULL);
 	vmaDestroyAllocator(ren->allocator);
-	SDL_DestroyWindow(win->p_win);
+	SDL_DestroyWindow(win->sdl_win);
 	SDL_QuitSubSystem(SDL_INIT_VIDEO);
 	SDL_Quit();
 	vkDestroyDevice(ren->device, NULL);
@@ -1391,52 +1300,28 @@ vec2s vec2_lerp(vec2s a, vec2s b, float t)
 	return (vec2s){ { lerp(a.x, b.x, t), lerp(a.y, b.y, t) } };
 }
 
-void update_uniforms(struct render_state *ren)
-{
-	vec2s mouse_pos;
-	SDL_GetMouseState(&mouse_pos.x, &mouse_pos.y);
-	ren->player_pos = vec2_lerp(ren->player_pos, mouse_pos, 0.01f);
-	ren->uniforms.pos = ren->player_pos;
-	ren->uniforms.color.r = 1.0f;
-	ren->uniforms.color.g = 0.0f;
-	ren->uniforms.color.b = 0.0f;
-	ren->uniforms.color.a = 1.0f;
+// void update_camera_uniforms(struct render_state *ren)
+// {
+// 	ren->camera_uniforms.proj = glms_perspective(glm_rad(78.0f), 800.0f / 600.0f, 0.1f, 10000.0f);
+//
+// 	vec3s eye = { { 0.0f, 0.0f, 0.0f } };
+// 	vec3s center = { { 0.0f, 0.0f, 10.0f } };
+// 	vec3s up = { { 0.0f, -1.0f, 0.0f } };
+//
+// 	ren->camera_uniforms.view = glms_lookat(eye, center, up);
+// }
 
-	ren->uniforms.proj = glms_perspective(glm_rad(78.0f), 800.0f / 600.0f, 0.1f, 10000.0f);
-	vec3s eye = { { 0.0f, 0.0f, 0.0f } };
-	vec3s center = { { 0.0f, 0.0f, 10.0f } };
-	vec3s up = { { 0.0f, -1.0f, 0.0f } };
-
-	ren->uniforms.view = glms_lookat(eye, center, up);
-
-	// vec3s rads = { {
-	// 	glm_rad(ren->ent.rot.x),
-	// 	glm_rad(ren->sponza_transform.rot.y),
-	// 	glm_rad(ren->sponza_transform.rot.z),
-	// } };
-	//
-	// versors rot = glms_euler_zyx_quat(rads);
-	//
-	// mat4s T = glms_translate(GLMS_MAT4_IDENTITY, ren->sponza_transform.pos);
-	// mat4s R = glms_quat_mat4(rot);
-	// mat4s S = glms_scale(GLMS_MAT4_IDENTITY, ren->sponza_transform.scale);
-	//
-	// ren->uniforms.model = glms_mat4_mul(T, glms_mat4_mul(R, S));
-}
-
-void vk_draw_frame(struct render_state *ren, struct window *win)
+void vk_draw_frame(struct render_state *ren, struct window *win, struct camera *cam)
 {
 	u32 frame = ren->frame_index;
 	vk_chk(vkWaitForFences(ren->device, 1, &ren->fences[frame], true, UINT64_MAX), NULL);
 	vk_chk(vkResetFences(ren->device, 1, &ren->fences[frame]), NULL);
-	vkAcquireNextImageKHR(ren->device, ren->swapchain, UINT64_MAX, ren->img_sems[frame], VK_NULL_HANDLE,
+	vkAcquireNextImageKHR(ren->device, ren->swapchain, UINT64_MAX, ren->sem_img[frame], VK_NULL_HANDLE,
 			      &ren->image_index);
 
-	//help me
+	struct uniform_data cam_uniforms = { .proj = cam->proj, .view = cam->view };
 
-	// ren->test_uniforms.add= ren->ubuf[frame].addr;
-
-	memcpy(ren->ubuf[frame].info.pMappedData, &ren->uniforms, sizeof(struct uniform_data));
+	memcpy(ren->camera_uniform_buffer[frame].info.pMappedData, &cam_uniforms, sizeof(struct uniform_data));
 
 	VkCommandBuffer cmd = ren->cmds[frame];
 	vk_chk(vkResetCommandBuffer(cmd, 0), NULL);
@@ -1526,50 +1411,32 @@ void vk_draw_frame(struct render_state *ren, struct window *win)
 	};
 
 	vkCmdSetScissor(cmd, 0, 1, &scissor);
-
 	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, ren->pipeline);
-	// VkDeviceSize vOffset = 0;
-
-	// vkCmdBindVertexBuffers(cmd, 0, 1, &ren->vert_buff, &vOffset);
-	// vkCmdBindIndexBuffer(cmd, ren->vert_buff, sizeof(vertices), VK_INDEX_TYPE_UINT32);
-
-	struct push_constants pc = {
-		.bda = ren->ubuf[frame].addr,
-		.tex_ind = 0,
-	};
-
-	// vkCmdBindVertexBuffers(cmd, 0, 1, &ren->sponza_mesh.buff, &ren->sponza_mesh.vertex_offset);
-	// vkCmdBindIndexBuffer(cmd, ren->sponza_mesh.buff, ren->sponza_mesh.ind_offset, VK_INDEX_TYPE_UINT32);
-	// vkCmdPushConstants(cmd, ren->pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
-	// 		   sizeof(pc), &pc);
 
 	for (u32 i = 0; i < ren->entity_count; i++) {
 		struct entity *e = &ren->entities[i];
 		if (!(e->flags & MESH_RENDERER))
 			continue;
 
-		// printf("Drawing entity!!!\n");
 		struct mesh_renderer *mr = &e->mesh_renderer;
 		struct mesh *m = e->mesh_renderer.mesh;
 
-		vec3s rads = { {
-			glm_rad(e->transform.rot.x),
-			glm_rad(e->transform.rot.y),
-			glm_rad(e->transform.rot.z),
-		} };
+		// vec3s rads = { {
+		// 	glm_rad(e->transform.rot.x),
+		// 	glm_rad(e->transform.rot.y),
+		// 	glm_rad(e->transform.rot.z),
+		// } };
+		//
+		// versors rot = glms_euler_zyx_quat(rads);
+		//
+		// mat4s T = glms_translate(GLMS_MAT4_IDENTITY, e->transform.pos);
+		// mat4s R = glms_quat_mat4(rot);
+		// mat4s S = glms_scale(GLMS_MAT4_IDENTITY, e->transform.scale);
 
-		versors rot = glms_euler_zyx_quat(rads);
-
-		mat4s T = glms_translate(GLMS_MAT4_IDENTITY, e->transform.pos);
-		mat4s R = glms_quat_mat4(rot);
-		mat4s S = glms_scale(GLMS_MAT4_IDENTITY, e->transform.scale);
-
-		e->mesh_renderer.uniforms.model = glms_mat4_mul(T, glms_mat4_mul(R, S));
+		// e->mesh_renderer.uniforms.model = glms_mat4_mul(T, glms_mat4_mul(R, S));
+		e->mesh_renderer.uniforms.model = e->transform.world_transform;
 
 		memcpy(mr->buffs[frame].info.pMappedData, &mr->uniforms, sizeof(struct entity_uniforms));
-
-		// vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, ren->pipeline_layout, 0, 1,
-		// 			&mr->sets[frame], 0, NULL);
 
 		vkCmdBindVertexBuffers(cmd, 0, 1, &m->buff, &m->vertex_offset);
 		vkCmdBindIndexBuffer(cmd, m->buff, m->ind_offset, VK_INDEX_TYPE_UINT32);
@@ -1577,32 +1444,25 @@ void vk_draw_frame(struct render_state *ren, struct window *win)
 		for (u32 k = 0; k < m->submesh_count; k++) {
 			struct submesh *sm = &m->submeshes[k];
 
-			VkDescriptorSet sets[3] = {
-				ren->set_test[frame],
+			VkDescriptorSet sets[2] = {
 				ren->set_tex,
 				mr->sets[frame],
 			};
 
-			pc.tex_ind = sm->tex_index;
+			struct push_constants pc = {
+				.bda = ren->camera_uniform_buffer[frame].addr,
+				.tex_ind = sm->tex_index,
+			};
 
 			vkCmdPushConstants(cmd, ren->pipeline_layout,
 					   VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc),
 					   &pc);
-			// ren->test_uniforms.tex_index = sm->tex_index;
-			// memcpy(ren->test_uniform_buf[frame].info.pMappedData, &ren->test_uniforms, sizeof(struct uniform_test));
-
-			vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, ren->pipeline_layout, 0, 3, sets,
+			vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, ren->pipeline_layout, 0, 2, sets,
 						0, NULL);
-			// vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, ren->pipeline_layout, 1, 1, &ren->set_tex, 0,
-			// 			NULL);
-			// vkCmdDrawIndexed(cmd, sizeof(indices) / sizeof(indices[0]), 1, 0, 0, 0);
-			//
-
-			// vkCmdDrawIndexed(cmd, ren->sponza_index_count, 1, 0, 0, 0);
 			vkCmdDrawIndexed(cmd, sm->index_count, 1, sm->index_offset, 0, 0);
 		}
 	}
-	cImGui_ImplVulkan_RenderDrawData(ren->imgui_draw_data, cmd);
+	cImGui_ImplVulkan_RenderDrawData(ImGui_GetDrawData(), cmd);
 	vkCmdEndRendering(cmd);
 
 	VkImageMemoryBarrier2 barrierPresent = {
@@ -1610,7 +1470,7 @@ void vk_draw_frame(struct render_state *ren, struct window *win)
 		.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
 		.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
 		.dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-		.dstAccessMask = 0,
+		.dstAccessMask = VK_ACCESS_NONE,
 		.oldLayout = VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL,
 		.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
 		.image = ren->swap_images[ren->image_index].image,
@@ -1631,23 +1491,22 @@ void vk_draw_frame(struct render_state *ren, struct window *win)
 	VkSubmitInfo submitInfo = {
 		.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
 		.waitSemaphoreCount = 1,
-		.pWaitSemaphores = &ren->img_sems[frame],
+		.pWaitSemaphores = &ren->sem_img[frame],
 		.pWaitDstStageMask = &waitStages,
 		.commandBufferCount = 1,
 		.pCommandBuffers = &cmd,
 		.signalSemaphoreCount = 1,
-		.pSignalSemaphores = &ren->ren_sems[ren->image_index],
+		.pSignalSemaphores = &ren->sem_ren[ren->image_index],
 	};
 
 	vk_chk(vkQueueSubmit(ren->gfx_q, 1, &submitInfo, ren->fences[frame]), NULL);
 
-	// frameIndex = (frameIndex + 1) % maxFramesInFlight;
 	ren->frame_index = (ren->frame_index + 1) % FIF;
 
 	VkPresentInfoKHR presentInfo = {
 		.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
 		.waitSemaphoreCount = 1,
-		.pWaitSemaphores = &ren->ren_sems[ren->image_index],
+		.pWaitSemaphores = &ren->sem_ren[ren->image_index],
 		.swapchainCount = 1,
 		.pSwapchains = &ren->swapchain,
 		.pImageIndices = &ren->image_index,
@@ -1656,12 +1515,19 @@ void vk_draw_frame(struct render_state *ren, struct window *win)
 	vkQueuePresentKHR(ren->gfx_q, &presentInfo);
 }
 
-void poll_events(struct window *win)
+void poll_events(struct window *win, struct input *input)
 {
+	input->actions[MOUSE_DELTA].composite = (vec2s){ 0.0f, 0.0f };
+
 	SDL_Event event;
 	while (SDL_PollEvent(&event)) {
 		cImGui_ImplSDL3_ProcessEvent(&event);
 		switch (event.type) {
+		case SDL_EVENT_MOUSE_MOTION:
+			input->actions[MOUSE_DELTA].composite = (vec2s){ event.motion.xrel, event.motion.yrel };
+		case SDL_EVENT_MOUSE_WHEEL:
+			input->actions[MWHEEL].axis = event.wheel.y;
+			break;
 		case SDL_EVENT_QUIT:
 			win->should_close = true;
 		case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
@@ -1713,40 +1579,114 @@ void scene_init(struct render_state *ren)
 
 	e = get_new_entity(ren);
 	entity_add_mesh_renderer(ren, e, &ren->meshes[0]);
-	// e->transform.scale = (vec3s){ 0.01f, 0.01f, 0.01f };
+}
 
-	// e = get_new_entity(ren);
-	// entity_add_camera(e);
+void update_time(struct render_state *ren)
+{
+	float time = SDL_GetTicks() / 1000.0f;
+	ren->delta_time = time - ren->last_time;
+	ren->last_time = time;
+}
+
+void input_update(struct input *input)
+{
+	// float oldX = input->relativeCursorPosition.x;
+	// float oldY = input->relativeCursorPosition.y;
+
+	// SDL_GetMouseState(&input->relativeCursorPosition.x, &input->relativeCursorPosition.y);
+	SDL_MouseButtonFlags mouseButtonFlags =
+		SDL_GetGlobalMouseState(&input->cursorPosition.x, &input->cursorPosition.y);
+
+	input->actions[MWHEEL].axis = 0.0f;
+	input->actions[M0].pushed = mouseButtonFlags & SDL_BUTTON_LMASK;
+	input->actions[M1].pushed = mouseButtonFlags & SDL_BUTTON_RMASK;
+	input->actions[DEL].pushed = input->sdl_keys[SDL_SCANCODE_DELETE];
+	input->actions[D].pushed = input->sdl_keys[SDL_SCANCODE_D];
+	input->actions[F].pushed = input->sdl_keys[SDL_SCANCODE_F];
+	input->actions[P].pushed = input->sdl_keys[SDL_SCANCODE_P];
+	input->actions[L].pushed = input->sdl_keys[SDL_SCANCODE_L];
+	input->actions[SPACE].pushed = input->sdl_keys[SDL_SCANCODE_SPACE];
+	input->actions[LSHIFT].pushed = input->sdl_keys[SDL_SCANCODE_LSHIFT];
+	input->actions[LCTRL].pushed = input->sdl_keys[SDL_SCANCODE_LCTRL];
+	input->actions[WASD].composite = (vec2s){ input->sdl_keys[SDL_SCANCODE_D] - input->sdl_keys[SDL_SCANCODE_A],
+						  input->sdl_keys[SDL_SCANCODE_W] - input->sdl_keys[SDL_SCANCODE_S] };
+	input->actions[ARROWS].composite = (vec2s){
+		input->sdl_keys[SDL_SCANCODE_LEFT] - input->sdl_keys[SDL_SCANCODE_RIGHT],
+		input->sdl_keys[SDL_SCANCODE_DOWN] - input->sdl_keys[SDL_SCANCODE_UP],
+	};
+
+	for (int i = 0; i < ACTION_COUNT; i++) {
+		struct key_action *action = &input->actions[i];
+
+		// if (i == WASD)
+		// 	printf("pushed: %b\n", action->pushed);
+		switch (action->state) {
+		case STARTED:
+			action->state = action->pushed ? ACTIVE : CANCELED;
+			break;
+		case ACTIVE:
+			if (!action->pushed)
+				action->state = CANCELED;
+			break;
+		case CANCELED:
+			if (action->pushed)
+				action->state = STARTED;
+			break;
+		}
+	}
+}
+
+void update_transforms(struct render_state *ren)
+{
+	for (int i = 0; i < ren->entity_count; i++) {
+		struct transform *t = &ren->entities[i].transform;
+		if (t->is_dirty)
+			update_transform_matrices(t);
+	}
 }
 
 int main()
 {
 	struct render_state ren = { 0 };
 	struct window win = { 0 };
+	struct editor editor = { 0 };
+	struct input input = { 0 };
+
+	editor.ren = &ren;
+	editor.win = &win;
+	editor.input = &input;
 
 	ren.textures = malloc(sizeof(*ren.textures) * 1000);
 	ren.meshes = malloc(sizeof(*ren.meshes) * 40000);
 	ren.entities = malloc(sizeof(*ren.entities) * 40000);
 
 	sdl_chk(SDL_Init(SDL_INIT_VIDEO), "Initializing");
+
+	input.sdl_keys = SDL_GetKeyboardState(NULL);
+	input.lock_mouse = SDL_SetWindowRelativeMouseMode;
+
 	vk_init(&ren, &win);
 	imgui_init(&ren, &win);
 	scene_init(&ren);
 
-	// ren.sponza_transform.scale = (vec3s){ 0.01f, 0.01f, 0.01f };
-	// ren.sponza_transform.rot.y = 90.0f;
-	win.should_close = false;
-
-	ren.last_time = SDL_GetTicks() / 1000.0f;
+	editor.cam = get_new_entity(&ren);
+	entity_add_camera(editor.cam);
+	editor.cam->camera.aspect = 800.0f / 600.0f;
+	editor.cam->camera.near = 0.1f;
+	editor.cam->camera.far = 10000.0f;
+	editor.look_sens = 1.0f;
+	editor.move_speed = 10.0f;
+	update_time(&ren);
 
 	while (!win.should_close) {
-		float time = SDL_GetTicks() / 1000.0f;
-		ren.delta_time = time - ren.last_time;
-		ren.last_time = time;
-		poll_events(&win);
-		draw_imgui(&ren);
-		update_uniforms(&ren);
-		vk_draw_frame(&ren, &win);
+		poll_events(&win, &input);
+		update_time(&ren);
+		input_update(&input);
+		draw_imgui(&editor);
+		editor_update(&editor);
+		update_transforms(&ren);
+		// update_camera_uniforms(&ren);
+		vk_draw_frame(&ren, &win, &editor.cam->camera);
 	}
 
 	vk_cleanup(&ren, &win);

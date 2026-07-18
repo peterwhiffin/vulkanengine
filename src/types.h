@@ -2,24 +2,60 @@
 #include "stdint.h"
 
 #include "SDL3/SDL_video.h"
-// #include "volk.h"
 #include "vk_mem_alloc.h"
-
 #include "cglm/types-struct.h"
-// #include "cglm/struct/cam.h"
-// #include "cglm/types.h"
-// #include "cglm/util.h"
-
-#include "imgui/dcimgui_impl_vulkan.h"
-// #include "imgui/dcimgui.h"
 
 typedef uint8_t u8;
 typedef uint32_t u32;
+typedef uint64_t u64;
+
+enum action_type { BUTTON, AXIS, COMPOSITE };
+
+enum action_state { CANCELED = 0, STARTED, ACTIVE };
+
+struct key_action {
+	enum action_type type;
+	enum action_state state;
+	union {
+		vec2s composite;
+		float axis;
+		bool pushed;
+	};
+};
+
+enum key_actions {
+	MWHEEL = 0,
+	MOUSE_DELTA,
+	WASD,
+	ARROWS,
+	M0,
+	M1,
+	SPACE,
+	LSHIFT,
+	LCTRL,
+	DEL,
+	D,
+	F,
+	L,
+	P,
+	ESC,
+	ACTION_COUNT
+};
+
+struct input {
+	bool (*lock_mouse)(SDL_Window *, bool);
+	const bool *sdl_keys;
+	vec2s cursorPosition;
+	vec2s relativeCursorPosition;
+	struct key_action actions[ACTION_COUNT];
+};
 
 struct transform {
+	mat4s world_transform;
 	vec3s pos;
 	vec3s rot;
 	vec3s scale;
+	bool is_dirty;
 };
 
 struct vertex {
@@ -61,18 +97,10 @@ struct mesh {
 struct uniform_data {
 	mat4s proj;
 	mat4s view;
-	vec4s color;
-	vec2s pos;
-	vec2s test;
-	float time;
 };
 
 struct entity_uniforms {
 	mat4s model;
-};
-
-struct uniform_test {
-	u32 tex_index;
 };
 
 struct push_constants {
@@ -105,9 +133,23 @@ enum entity_flags {
 };
 
 struct camera {
-	mat4 proj;
-	mat4 view;
+	// union {
+	// 	struct {
+	// 		mat4s proj;
+	// 		mat4s view;
+	// 	} uniforms;
+	//
+	// 	mat4s proj;
+	// 	mat4s view;
+	// };
+
+	mat4s proj;
+	mat4s view;
+
 	float fov;
+	float aspect;
+	float near;
+	float far;
 	bool is_perspective;
 };
 
@@ -124,60 +166,56 @@ struct render_state {
 	VkInstance instance;
 	VkPhysicalDevice physical_device;
 	VkDevice device;
+
 	VkQueue gfx_q;
+
 	VkFormat swap_fmt;
 	VkFormat depth_fmt;
 	VkSwapchainKHR swapchain;
+
 	VkCommandPool cmd_pool;
 	VkCommandBuffer *cmds;
+
 	VkFence *fences;
-	VkSemaphore *img_sems;
-	VkSemaphore *ren_sems;
+	VkSemaphore *sem_img;
+	VkSemaphore *sem_ren;
+
 	VkDebugUtilsMessengerEXT debug_messenger;
+
 	VkDescriptorSetLayout set_layout_tex;
 	VkDescriptorSetLayout set_layout_entity;
-	VkDescriptorSetLayout set_layout_buf;
 	VkDescriptorPool desc_pool;
 	VkDescriptorSet set_tex;
-	VkDescriptorSet *set_test;
-	VkBuffer vert_buff;
-	VkBuffer sponza_vert_buff;
 	VkSampler sampler;
+
 	VkShaderModule shader;
 	VkPipelineLayout pipeline_layout;
 	VkPipeline pipeline;
-	VmaAllocation vert_alloc;
-	VmaAllocation sponza_vert_alloc;
-	struct uniform_buffer *ubuf;
-	struct uniform_buffer *test_uniform_buf;
-	struct uniform_data uniforms;
-	struct uniform_test test_uniforms;
-	u32 swap_count;
+
+	VmaAllocator allocator;
+
+	struct mesh quad_mesh;
+	struct uniform_buffer *camera_uniform_buffer;
+	struct uniform_data camera_uniforms;
 	struct image *swap_images;
 	struct image depth_image;
-	// struct image tex_image;
-	VmaAllocator allocator;
-	u32 gfx_q_fam;
-	u32 frame_index;
-	u32 image_index;
-	VkDeviceSize sponza_i_offset;
-	VkDeviceSize sponza_index_count;
-	struct mesh *meshes;
-	u32 mesh_count;
-	struct entity *entities;
-	u32 entity_count;
-	// struct mesh sponza_mesh;
-	struct image *textures;
 
-	VkDescriptorSet set_global;
+	struct mesh *meshes;
+	struct entity *entities;
+	struct image *textures;
+	u32 entity_count;
 	u32 texture_count;
-	bool update_swap;
-	vec2s player_pos;
+	u32 mesh_count;
+
 	float last_time;
 	float delta_time;
 
-	// struct transform sponza_transform;
-	ImDrawData *imgui_draw_data;
+	u32 gfx_q_fam;
+	u32 swap_count;
+	u32 frame_index;
+	u32 image_index;
+
+	bool update_swap;
 };
 
 struct render_pass {
@@ -189,9 +227,20 @@ struct render_pass {
 };
 
 struct window {
-	SDL_Window *p_win;
+	SDL_Window *sdl_win;
 	VkSurfaceKHR surf;
 	u32 w;
 	u32 h;
 	bool should_close;
+};
+
+struct editor {
+	struct render_state *ren;
+	struct window *win;
+	struct input *input;
+	struct entity *cam;
+	float cam_pitch;
+	float cam_yaw;
+	float look_sens;
+	float move_speed;
 };
