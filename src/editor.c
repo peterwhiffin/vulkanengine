@@ -68,6 +68,8 @@ void draw_editor_settings(struct editor *editor)
 	ImGui_DragFloat3Ex("Light Dir", &editor->ren->light_dir.x, 0.01f, 0.0f, 0.0f, NULL,
 			   ImGuiSliderFlags_ColorMarkers);
 
+	ImGui_Text("%s%.0f", "FPS: ", editor->fps);
+	ImGui_Text("%s%.2f%s", "Frame time: ", editor->frame_time, " ms");
 	ImGui_End();
 }
 
@@ -221,4 +223,14 @@ void editor_update(struct editor *editor)
 {
 	editor_camera_update(editor);
 	editor_camera_update_proj(editor->cam);
+
+	if (editor->time_accum >= 1.0f) {
+		editor->fps = editor->frame_count / editor->time_accum;
+		editor->frame_time = (editor->time_accum / editor->frame_count) * 1000.0f;
+		editor->time_accum = 0.0f;
+		editor->frame_count = 0;
+	} else {
+		editor->time_accum += editor->ren->delta_time;
+		editor->frame_count++;
+	}
 }

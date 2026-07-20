@@ -250,5 +250,9 @@ struct editor {
 	float cam_yaw;
 	float look_sens;
 	float move_speed;
+	float time_accum;
+	u32 frame_count;
+	float fps;
+	float frame_time;
 	struct entity *selected_entity;
 };

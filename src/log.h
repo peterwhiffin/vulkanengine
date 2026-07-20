@@ -12,6 +12,7 @@
 
 #if LOG_LVL > NO_LOG
 #define LOG_ERR(msg, ...) printf("[ERROR] " msg "\n", __VA_ARGS__);
+#define LOG_VK(msg, ...) printf(msg "\n", __VA_ARGS__);
 #else
 #define LOG_ERR(msg, ...)
 #endif

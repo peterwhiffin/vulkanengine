@@ -69,12 +69,84 @@ void chk_swapchain(struct render_state *ren, VkResult result)
 	}
 }
 
+typedef enum VkDebugUtilsMessageSeverityFlagBitsEXT {
+	VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT = 0x00000001,
+	VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT = 0x00000010,
+	VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT = 0x00000100,
+	VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT = 0x00001000,
+	VK_DEBUG_UTILS_MESSAGE_SEVERITY_FLAG_BITS_MAX_ENUM_EXT = 0x7FFFFFFF
+} VkDebugUtilsMessageSeverityFlagBitsEXT;
+
+typedef enum VkDebugUtilsMessageTypeFlagBitsEXT {
+	VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT = 0x00000001,
+	VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT = 0x00000002,
+	VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT = 0x00000004,
+	VK_DEBUG_UTILS_MESSAGE_TYPE_DEVICE_ADDRESS_BINDING_BIT_EXT = 0x00000008,
+	VK_DEBUG_UTILS_MESSAGE_TYPE_FLAG_BITS_MAX_ENUM_EXT = 0x7FFFFFFF
+} VkDebugUtilsMessageTypeFlagBitsEXT;
+
 static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT severity,
 						    VkDebugUtilsMessageTypeFlagsEXT type,
 						    VkDebugUtilsMessengerCallbackDataEXT const *pCallbackData,
 						    void *pUserData)
 {
-	printf("validation layer: type %u msg: %s\n", type, pCallbackData->pMessage);
+	char s[128];
+	char t[128];
+	bool hasType = true;
+	bool hasSeverity = true;
+
+	switch (severity) {
+	case VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT:
+		snprintf(s, 128, "%s", "[VERBOSE]");
+		break;
+	case VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT:
+		snprintf(s, 128, "%s", "[INFO]");
+		break;
+	case VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT:
+		snprintf(s, 128, "%s", "[WARNING]");
+		break;
+	case VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT:
+		snprintf(s, 128, "%s", "[ERROR]");
+		break;
+	case VK_DEBUG_UTILS_MESSAGE_SEVERITY_FLAG_BITS_MAX_ENUM_EXT:
+	default:
+		hasSeverity = false;
+	}
+
+	switch (type) {
+	case VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT:
+		snprintf(t, 128, "%s", "[GENERAL]");
+		break;
+	case VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT:
+		snprintf(t, 128, "%s", "[VALIDATION]");
+		break;
+	case VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT:
+		snprintf(t, 128, "%s", "[PERFORMANCE]");
+		break;
+	case VK_DEBUG_UTILS_MESSAGE_TYPE_DEVICE_ADDRESS_BINDING_BIT_EXT:
+		snprintf(t, 128, "%s", "[DEVICE ADDRESS BINDING]");
+		break;
+	case VK_DEBUG_UTILS_MESSAGE_TYPE_FLAG_BITS_MAX_ENUM_EXT:
+	default:
+		hasType = false;
+	}
+
+	char *sep = "-------------------------------------------------------------------";
+
+	size_t sep_len = strlen(sep);
+	size_t slen = strlen(s);
+	size_t tlen = strlen(t);
+
+	char *split = sep + (sep_len + slen + tlen) / 2;
+
+	if (hasType && hasSeverity) {
+		LOG_VK("%s%s%s%s", split, s, t, split);
+		LOG_VK("%s", pCallbackData->pMessage);
+		LOG_VK("%s\n", sep);
+	} else {
+		LOG_VK("%s", pCallbackData->pMessage);
+	}
+
 	return VK_FALSE;
 }
 
@@ -108,6 +180,7 @@ void vk_init_debug_messenger(struct render_state *ren)
 		.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,
 		.messageSeverity = severityFlags,
 		.messageType = messageTypeFlags,
+
 		.pfnUserCallback = debugCallback
 	};
 
@@ -171,6 +244,33 @@ void vk_create_instance(struct render_state *ren)
 		LOG_INFO("VK::Extension enabled: %s", ext[i]);
 	}
 
+	VkBool32 enable_limit = VK_TRUE;
+	u32 max_dup = 1;
+
+	VkLayerSettingEXT settings[2] = {
+		(VkLayerSettingEXT){
+			.pLayerName = "VK_LAYER_KHRONOS_validation",
+			.pSettingName = "enable_message_limit",
+			.type = VK_LAYER_SETTING_TYPE_BOOL32_EXT,
+			.valueCount = 1,
+			.pValues = &enable_limit,
+		},
+		(VkLayerSettingEXT){
+			.pLayerName = "VK_LAYER_KHRONOS_validation",
+			.pSettingName = "duplicate_message_limit",
+			.type = VK_LAYER_SETTING_TYPE_UINT32_EXT,
+			.valueCount = 1,
+			.pValues = &max_dup,
+		},
+	};
+
+	VkLayerSettingsCreateInfoEXT layerSettingsCreateInfo = {
+		.sType = VK_STRUCTURE_TYPE_LAYER_SETTINGS_CREATE_INFO_EXT,
+		.pNext = NULL,
+		.settingCount = 2,
+		.pSettings = settings,
+	};
+
 	VkApplicationInfo app_info = {
 		.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
 		.pNext = NULL,
@@ -183,7 +283,7 @@ void vk_create_instance(struct render_state *ren)
 
 	VkInstanceCreateInfo instanceInfo = {
 		.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
-		.pNext = NULL,
+		.pNext = &layerSettingsCreateInfo,
 		.flags = 0,
 		.pApplicationInfo = &app_info,
 		.enabledLayerCount = lay_count,
@@ -354,7 +454,9 @@ void vk_create_swapchain(struct render_state *ren, struct window *win, VkSwapcha
 		.pQueueFamilyIndices = NULL,
 		.preTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR,
 		.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
-		.presentMode = VK_PRESENT_MODE_FIFO_KHR,
+		.presentMode = VK_PRESENT_MODE_MAILBOX_KHR,
+		// .presentMode = VK_PRESENT_MODE_IMMEDIATE_KHR,
+		// .presentMode = VK_PRESENT_MODE_FIFO_KHR,
 		.clipped = 0,
 		.oldSwapchain = old,
 	};
