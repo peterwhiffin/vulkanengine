@@ -2,3 +2,5 @@ CompileFlags:
   CompilationDatabase: build/lin
 Completion:
   HeaderInsertion: Never
+Diagnostics:
+  UnusedIncludes: None

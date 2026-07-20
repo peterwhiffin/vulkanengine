@@ -52,6 +52,7 @@ struct input {
 
 struct transform {
 	mat4s world_transform;
+	mat3s normal_matrix;
 	vec3s pos;
 	vec3s rot;
 	vec3s scale;
@@ -86,6 +87,7 @@ struct submesh {
 };
 
 struct mesh {
+	char name[128];
 	VkBuffer buff;
 	VkDeviceSize ind_offset;
 	VkDeviceSize vertex_offset;
@@ -94,13 +96,16 @@ struct mesh {
 	u32 submesh_count;
 };
 
-struct uniform_data {
+struct per_frame_uniforms {
 	mat4s proj;
 	mat4s view;
+	vec4s light_dir;
+	vec4s cam_pos;
 };
 
 struct entity_uniforms {
 	mat4s model;
+	mat4s normal_mat;
 };
 
 struct push_constants {
@@ -115,7 +120,8 @@ struct material {
 
 struct mesh_renderer {
 	struct mesh *mesh;
-	struct entity_uniforms uniforms;
+	mat4s normal_matrix;
+	// struct entity_uniforms uniforms;
 	struct uniform_buffer *buffs;
 	VkDescriptorSet *sets;
 	u32 material_index;
@@ -133,16 +139,6 @@ enum entity_flags {
 };
 
 struct camera {
-	// union {
-	// 	struct {
-	// 		mat4s proj;
-	// 		mat4s view;
-	// 	} uniforms;
-	//
-	// 	mat4s proj;
-	// 	mat4s view;
-	// };
-
 	mat4s proj;
 	mat4s view;
 
@@ -183,21 +179,30 @@ struct render_state {
 	VkDebugUtilsMessengerEXT debug_messenger;
 
 	VkDescriptorSetLayout set_layout_tex;
+	VkDescriptorSetLayout set_layout_tex_post;
 	VkDescriptorSetLayout set_layout_entity;
 	VkDescriptorPool desc_pool;
 	VkDescriptorSet set_tex;
+	VkDescriptorSet *set_tex_post;
 	VkSampler sampler;
 
-	VkShaderModule shader;
-	VkPipelineLayout pipeline_layout;
-	VkPipeline pipeline;
+	VkShaderModule default_shader;
+	VkShaderModule post_shader;
+	VkPipelineLayout default_pipeline_layout;
+	VkPipelineLayout post_pipeline_layout;
+	VkPipeline default_pipeline;
+	VkPipeline post_pipeline;
 
 	VmaAllocator allocator;
 
+	struct image *images;
+	u32 image_count;
+
 	struct mesh quad_mesh;
 	struct uniform_buffer *camera_uniform_buffer;
-	struct uniform_data camera_uniforms;
+	struct per_frame_uniforms camera_uniforms;
 	struct image *swap_images;
+	struct image **post_images;
 	struct image depth_image;
 
 	struct mesh *meshes;
@@ -214,6 +219,8 @@ struct render_state {
 	u32 swap_count;
 	u32 frame_index;
 	u32 image_index;
+
+	vec3s light_dir;
 
 	bool update_swap;
 };
@@ -243,4 +250,5 @@ struct editor {
 	float cam_yaw;
 	float look_sens;
 	float move_speed;
+	struct entity *selected_entity;
 };

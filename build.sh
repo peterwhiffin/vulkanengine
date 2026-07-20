@@ -17,7 +17,7 @@ FLAGS=(
 )
 
 DEFINES=(
-	-DLOG_LVL=3
+	-DLOG_LVL=2
 )
 
 INCLUDES=(
